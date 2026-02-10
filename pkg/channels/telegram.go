@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -17,11 +18,13 @@ import (
 
 type TelegramChannel struct {
 	*BaseChannel
-	bot         *tgbotapi.BotAPI
-	config      config.TelegramConfig
-	chatIDs     map[string]int64
-	updates     tgbotapi.UpdatesChannel
-	transcriber *voice.GroqTranscriber
+	bot          *tgbotapi.BotAPI
+	config       config.TelegramConfig
+	chatIDs      map[string]int64
+	updates      tgbotapi.UpdatesChannel
+	transcriber  *voice.GroqTranscriber
+	placeholders sync.Map // chatID -> messageID
+	stopThinking sync.Map // chatID -> chan struct{}
 }
 
 func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*TelegramChannel, error) {
@@ -33,11 +36,13 @@ func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*Telegr
 	base := NewBaseChannel("telegram", cfg, bus, cfg.AllowFrom)
 
 	return &TelegramChannel{
-		BaseChannel: base,
-		bot:         bot,
-		config:      cfg,
-		chatIDs:     make(map[string]int64),
-		transcriber: nil,
+		BaseChannel:  base,
+		bot:          bot,
+		config:       cfg,
+		chatIDs:      make(map[string]int64),
+		transcriber:  nil,
+		placeholders: sync.Map{},
+		stopThinking: sync.Map{},
 	}, nil
 }
 
@@ -104,7 +109,25 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		return fmt.Errorf("invalid chat ID: %w", err)
 	}
 
+	// Stop thinking animation
+	if stop, ok := c.stopThinking.Load(msg.ChatID); ok {
+		close(stop.(chan struct{}))
+		c.stopThinking.Delete(msg.ChatID)
+	}
+
 	htmlContent := markdownToTelegramHTML(msg.Content)
+
+	// Try to edit placeholder
+	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
+		c.placeholders.Delete(msg.ChatID)
+		editMsg := tgbotapi.NewEditMessageText(chatID, pID.(int), htmlContent)
+		editMsg.ParseMode = tgbotapi.ModeHTML
+
+		if _, err := c.bot.Send(editMsg); err == nil {
+			return nil
+		}
+		// Fallback to new message if edit fails
+	}
 
 	tgMsg := tgbotapi.NewMessage(chatID, htmlContent)
 	tgMsg.ParseMode = tgbotapi.ModeHTML
@@ -221,6 +244,37 @@ func (c *TelegramChannel) handleMessage(update tgbotapi.Update) {
 	}
 
 	log.Printf("Telegram message from %s: %s...", senderID, truncateString(content, 50))
+
+	// Thinking indicator
+	c.bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+
+	stopChan := make(chan struct{})
+	c.stopThinking.Store(fmt.Sprintf("%d", chatID), stopChan)
+
+	pMsg, err := c.bot.Send(tgbotapi.NewMessage(chatID, "Thinking... 💭"))
+	if err == nil {
+		pID := pMsg.MessageID
+		c.placeholders.Store(fmt.Sprintf("%d", chatID), pID)
+
+		go func(cid int64, mid int, stop <-chan struct{}) {
+			dots := []string{".", "..", "..."}
+			emotes := []string{"💭", "🤔", "☁️"}
+			i := 0
+			ticker := time.NewTicker(2000 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					i++
+					text := fmt.Sprintf("Thinking%s %s", dots[i%len(dots)], emotes[i%len(emotes)])
+					edit := tgbotapi.NewEditMessageText(cid, mid, text)
+					c.bot.Send(edit)
+				}
+			}
+		}(chatID, pID, stopChan)
+	}
 
 	metadata := map[string]string{
 		"message_id": fmt.Sprintf("%d", message.MessageID),
