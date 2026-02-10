@@ -278,7 +278,7 @@ Config file: `~/.picoclaw/config.json`
 | `anthropic(To be tested)` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
 | `openai(To be tested)` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
 | `deepseek(To be tested)` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `groq(To be tested)` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
+| `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
 
 
 <details>

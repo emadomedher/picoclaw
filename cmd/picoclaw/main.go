@@ -142,7 +142,8 @@ func main() {
 
 func printHelp() {
 	fmt.Printf("%s picoclaw - Personal AI Assistant v%s\n\n", logo, version)
-	fmt.Println("Usage: picoclaw <command>\n")
+	fmt.Println("Usage: picoclaw <command>")
+	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  onboard     Initialize picoclaw configuration and workspace")
 	fmt.Println("  agent       Interact with the agent directly")
@@ -450,8 +451,8 @@ func agentCmd() {
 		os.Exit(1)
 	}
 
-	bus := bus.NewMessageBus()
-	agentLoop := agent.NewAgentLoop(cfg, bus, provider)
+	msgBus := bus.NewMessageBus()
+	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
 
 	if message != "" {
 		ctx := context.Background()
@@ -472,7 +473,7 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          prompt,
-		HistoryFile:     "/tmp/.picoclaw_history",
+		HistoryFile:     filepath.Join(os.TempDir(), ".picoclaw_history"),
 		HistoryLimit:    100,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -566,8 +567,8 @@ func gatewayCmd() {
 		os.Exit(1)
 	}
 
-	bus := bus.NewMessageBus()
-	agentLoop := agent.NewAgentLoop(cfg, bus, provider)
+	msgBus := bus.NewMessageBus()
+	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
 
 	cronStorePath := filepath.Join(filepath.Dir(getConfigPath()), "cron", "jobs.json")
 	cronService := cron.NewCronService(cronStorePath, nil)
@@ -579,7 +580,7 @@ func gatewayCmd() {
 		true,
 	)
 
-	channelManager, err := channels.NewManager(cfg, bus)
+	channelManager, err := channels.NewManager(cfg, msgBus)
 	if err != nil {
 		fmt.Printf("Error creating channel manager: %v\n", err)
 		os.Exit(1)
@@ -596,6 +597,12 @@ func gatewayCmd() {
 			if tc, ok := telegramChannel.(*channels.TelegramChannel); ok {
 				tc.SetTranscriber(transcriber)
 				logger.InfoC("voice", "Groq transcription attached to Telegram channel")
+			}
+		}
+		if discordChannel, ok := channelManager.GetChannel("discord"); ok {
+			if dc, ok := discordChannel.(*channels.DiscordChannel); ok {
+				dc.SetTranscriber(transcriber)
+				logger.InfoC("voice", "Groq transcription attached to Discord channel")
 			}
 		}
 	}

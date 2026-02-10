@@ -3,7 +3,11 @@ package channels
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -305,9 +309,20 @@ func (c *TelegramChannel) downloadFileWithInfo(file *tgbotapi.File, ext string) 
 	url := file.Link(c.bot.Token)
 	log.Printf("File URL: %s", url)
 
-	mediaDir := "/tmp/picoclaw_media"
+	mediaDir := filepath.Join(os.TempDir(), "picoclaw_media")
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		log.Printf("Failed to create media directory: %v", err)
+		return ""
+	}
 
-	return fmt.Sprintf("%s/%s%s", mediaDir, file.FilePath[:min(16, len(file.FilePath))], ext)
+	localPath := filepath.Join(mediaDir, file.FilePath[:min(16, len(file.FilePath))]+ext)
+
+	if err := c.downloadFromURL(url, localPath); err != nil {
+		log.Printf("Failed to download file: %v", err)
+		return ""
+	}
+
+	return localPath
 }
 
 func min(a, b int) int {
@@ -315,6 +330,32 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (c *TelegramChannel) downloadFromURL(url, localPath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	log.Printf("File downloaded successfully to: %s", localPath)
+	return nil
 }
 
 func (c *TelegramChannel) downloadFile(fileID, ext string) string {
@@ -331,9 +372,20 @@ func (c *TelegramChannel) downloadFile(fileID, ext string) string {
 	url := file.Link(c.bot.Token)
 	log.Printf("File URL: %s", url)
 
-	mediaDir := "/tmp/picoclaw_media"
+	mediaDir := filepath.Join(os.TempDir(), "picoclaw_media")
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		log.Printf("Failed to create media directory: %v", err)
+		return ""
+	}
 
-	return fmt.Sprintf("%s/%s%s", mediaDir, fileID[:16], ext)
+	localPath := filepath.Join(mediaDir, fileID[:16]+ext)
+
+	if err := c.downloadFromURL(url, localPath); err != nil {
+		log.Printf("Failed to download file: %v", err)
+		return ""
+	}
+
+	return localPath
 }
 
 func parseChatID(chatIDStr string) (int64, error) {
