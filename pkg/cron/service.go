@@ -149,13 +149,15 @@ func (cs *CronService) checkJobs() {
 	}
 
 	// Update next run times for due jobs immediately (before executing)
+	// Use map for O(n) lookup instead of O(n²) nested loop
+	dueMap := make(map[string]bool, len(dueJobs))
+	for _, job := range dueJobs {
+		dueMap[job.ID] = true
+	}
 	for i := range cs.store.Jobs {
-		for _, dueJob := range dueJobs {
-			if cs.store.Jobs[i].ID == dueJob.ID {
-				// Reset NextRunAtMS temporarily so we don't re-execute
-				cs.store.Jobs[i].State.NextRunAtMS = nil
-				break
-			}
+		if dueMap[cs.store.Jobs[i].ID] {
+			// Reset NextRunAtMS temporarily so we don't re-execute
+			cs.store.Jobs[i].State.NextRunAtMS = nil
 		}
 	}
 
@@ -325,6 +327,9 @@ func (cs *CronService) AddJob(name string, schedule CronSchedule, message string
 
 	now := time.Now().UnixMilli()
 
+	// One-time tasks (at) should be deleted after execution
+	deleteAfterRun := (schedule.Kind == "at")
+
 	job := CronJob{
 		ID:       generateID(),
 		Name:     name,
@@ -342,7 +347,7 @@ func (cs *CronService) AddJob(name string, schedule CronSchedule, message string
 		},
 		CreatedAtMS:    now,
 		UpdatedAtMS:    now,
-		DeleteAfterRun: false,
+		DeleteAfterRun: deleteAfterRun,
 	}
 
 	cs.store.Jobs = append(cs.store.Jobs, job)

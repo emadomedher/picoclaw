@@ -11,13 +11,14 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/skills"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 type ContextBuilder struct {
 	workspace    string
 	skillsLoader *skills.SkillsLoader
 	memory       *MemoryStore
-	toolsSummary func() []string // Function to get tool summaries dynamically
+	tools        *tools.ToolRegistry // Direct reference to tool registry
 }
 
 func getGlobalConfigDir() string {
@@ -28,9 +29,9 @@ func getGlobalConfigDir() string {
 	return filepath.Join(home, ".picoclaw")
 }
 
-func NewContextBuilder(workspace string, toolsSummaryFunc func() []string) *ContextBuilder {
-	// builtin skills: 当前项目的 skills 目录
-	// 使用当前工作目录下的 skills/ 目录
+func NewContextBuilder(workspace string) *ContextBuilder {
+	// builtin skills: skills directory in current project
+	// Use the skills/ directory under the current working directory
 	wd, _ := os.Getwd()
 	builtinSkillsDir := filepath.Join(wd, "skills")
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
@@ -39,8 +40,12 @@ func NewContextBuilder(workspace string, toolsSummaryFunc func() []string) *Cont
 		workspace:    workspace,
 		skillsLoader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
 		memory:       NewMemoryStore(workspace),
-		toolsSummary: toolsSummaryFunc,
 	}
+}
+
+// SetToolsRegistry sets the tools registry for dynamic tool summary generation.
+func (cb *ContextBuilder) SetToolsRegistry(registry *tools.ToolRegistry) {
+	cb.tools = registry
 }
 
 func (cb *ContextBuilder) getIdentity() string {
@@ -80,11 +85,11 @@ Your workspace is at: %s
 }
 
 func (cb *ContextBuilder) buildToolsSection() string {
-	if cb.toolsSummary == nil {
+	if cb.tools == nil {
 		return ""
 	}
 
-	summaries := cb.toolsSummary()
+	summaries := cb.tools.GetSummaries()
 	if len(summaries) == 0 {
 		return ""
 	}
