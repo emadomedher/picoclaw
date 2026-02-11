@@ -551,20 +551,8 @@ func gatewayCmd() {
 			"skills_available": skillsInfo["available"],
 		})
 
-	cronStorePath := filepath.Join(filepath.Dir(getConfigPath()), "cron", "jobs.json")
-
-	// Create cron service first (onJob handler set after CronTool creation)
-	cronService := cron.NewCronService(cronStorePath, nil)
-
-	// Create and register CronTool
-	cronTool := tools.NewCronTool(cronService, agentLoop)
-	agentLoop.RegisterTool(cronTool)
-
-	// Now set the onJob handler for cron service
-	cronService.SetOnJob(func(job *cron.CronJob) (string, error) {
-		result := cronTool.ExecuteJob(context.Background(), job)
-		return result, nil
-	})
+	// Setup cron tool and service
+	cronService, _ := setupCronTool(agentLoop, msgBus, cfg.WorkspacePath())
 
 	heartbeatService := heartbeat.NewHeartbeatService(
 		cfg.WorkspacePath(),
@@ -702,6 +690,25 @@ func getConfigPath() string {
 	return filepath.Join(home, ".picoclaw", "config.json")
 }
 
+func setupCronTool(agentLoop *agent.AgentLoop, msgBus *bus.MessageBus, workspace string) (*cron.CronService, *tools.CronTool) {
+	cronStorePath := filepath.Join(workspace, "cron", "jobs.json")
+
+	// Create cron service
+	cronService := cron.NewCronService(cronStorePath, nil)
+
+	// Create and register CronTool
+	cronTool := tools.NewCronTool(cronService, agentLoop, msgBus)
+	agentLoop.RegisterTool(cronTool)
+
+	// Set the onJob handler
+	cronService.SetOnJob(func(job *cron.CronJob) (string, error) {
+		result := cronTool.ExecuteJob(context.Background(), job)
+		return result, nil
+	})
+
+	return cronService, cronTool
+}
+
 func loadConfig() (*config.Config, error) {
 	return config.LoadConfig(getConfigPath())
 }
@@ -714,8 +721,14 @@ func cronCmd() {
 
 	subcommand := os.Args[2]
 
-	dataDir := filepath.Join(filepath.Dir(getConfigPath()), "cron")
-	cronStorePath := filepath.Join(dataDir, "jobs.json")
+	// Load config to get workspace path
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		return
+	}
+
+	cronStorePath := filepath.Join(cfg.WorkspacePath(), "cron", "jobs.json")
 
 	switch subcommand {
 	case "list":

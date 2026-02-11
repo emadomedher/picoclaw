@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/cron"
 )
 
@@ -24,16 +26,18 @@ type JobExecutor interface {
 type CronTool struct {
 	cronService *cron.CronService
 	executor    JobExecutor
+	msgBus      *bus.MessageBus
 	channel     string
 	chatID      string
 	mu          sync.RWMutex
 }
 
 // NewCronTool creates a new CronTool
-func NewCronTool(cronService *cron.CronService, executor JobExecutor) *CronTool {
+func NewCronTool(cronService *cron.CronService, executor JobExecutor, msgBus *bus.MessageBus) *CronTool {
 	return &CronTool{
 		cronService: cronService,
 		executor:    executor,
+		msgBus:      msgBus,
 	}
 }
 
@@ -44,7 +48,7 @@ func (t *CronTool) Name() string {
 
 // Description returns the tool description
 func (t *CronTool) Description() string {
-	return "Schedule reminders and recurring tasks. Actions: add, list, remove, enable, disable."
+	return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am)."
 }
 
 // Parameters returns the tool parameters schema
@@ -55,23 +59,31 @@ func (t *CronTool) Parameters() map[string]interface{} {
 			"action": map[string]interface{}{
 				"type":        "string",
 				"enum":        []string{"add", "list", "remove", "enable", "disable"},
-				"description": "Action to perform",
+				"description": "Action to perform. Use 'add' when user wants to schedule a reminder or task.",
 			},
 			"message": map[string]interface{}{
 				"type":        "string",
-				"description": "Reminder message (for add)",
+				"description": "The reminder/task message to display when triggered (required for add)",
+			},
+			"at_seconds": map[string]interface{}{
+				"type":        "integer",
+				"description": "One-time reminder: seconds from now when to trigger (e.g., 600 for 10 minutes later). Use this for one-time reminders like 'remind me in 10 minutes'.",
 			},
 			"every_seconds": map[string]interface{}{
 				"type":        "integer",
-				"description": "Interval in seconds for recurring tasks",
+				"description": "Recurring interval in seconds (e.g., 3600 for every hour). Use this ONLY for recurring tasks like 'every 2 hours' or 'daily reminder'.",
 			},
 			"cron_expr": map[string]interface{}{
 				"type":        "string",
-				"description": "Cron expression like '0 9 * * *' for scheduled tasks",
+				"description": "Cron expression for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). Use this for complex recurring schedules.",
 			},
 			"job_id": map[string]interface{}{
 				"type":        "string",
 				"description": "Job ID (for remove/enable/disable)",
+			},
+			"deliver": map[string]interface{}{
+				"type":        "boolean",
+				"description": "If true, send message directly to channel. If false, let agent process the message (for complex tasks). Default: true",
 			},
 		},
 		"required": []string{"action"},
@@ -126,32 +138,44 @@ func (t *CronTool) addJob(args map[string]interface{}) (string, error) {
 
 	var schedule cron.CronSchedule
 
-	// Check for every_seconds
+	// Check for at_seconds (one-time), every_seconds (recurring), or cron_expr
+	atSeconds, hasAt := args["at_seconds"].(float64)
 	everySeconds, hasEvery := args["every_seconds"].(float64)
 	cronExpr, hasCron := args["cron_expr"].(string)
 
-	if !hasEvery && !hasCron {
-		return "Error: either every_seconds or cron_expr is required", nil
-	}
-
-	if hasEvery {
+	// Priority: at_seconds > every_seconds > cron_expr
+	if hasAt {
+		atMS := time.Now().UnixMilli() + int64(atSeconds)*1000
+		schedule = cron.CronSchedule{
+			Kind: "at",
+			AtMS: &atMS,
+		}
+	} else if hasEvery {
 		everyMS := int64(everySeconds) * 1000
 		schedule = cron.CronSchedule{
 			Kind:    "every",
 			EveryMS: &everyMS,
 		}
-	} else {
+	} else if hasCron {
 		schedule = cron.CronSchedule{
 			Kind: "cron",
 			Expr: cronExpr,
 		}
+	} else {
+		return "Error: one of at_seconds, every_seconds, or cron_expr is required", nil
+	}
+
+	// Read deliver parameter, default to true
+	deliver := true
+	if d, ok := args["deliver"].(bool); ok {
+		deliver = d
 	}
 
 	job, err := t.cronService.AddJob(
 		truncateString(message, 30),
 		schedule,
 		message,
-		true, // deliver
+		deliver,
 		channel,
 		chatID,
 	)
@@ -231,6 +255,17 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		chatID = "direct"
 	}
 
+	// If deliver=true, send message directly without agent processing
+	if job.Payload.Deliver {
+		t.msgBus.PublishOutbound(bus.OutboundMessage{
+			Channel: channel,
+			ChatID:  chatID,
+			Content: job.Payload.Message,
+		})
+		return "ok"
+	}
+
+	// For deliver=false, process through agent (for complex tasks)
 	sessionKey := fmt.Sprintf("cron-%s", job.ID)
 
 	// Call agent with the job's message

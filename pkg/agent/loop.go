@@ -69,7 +69,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	editFileTool := tools.NewEditFileTool(workspace)
 	toolsRegistry.Register(editFileTool)
 
-	sessionsManager := session.NewSessionManager(filepath.Join(filepath.Dir(cfg.WorkspacePath()), "sessions"))
+	sessionsManager := session.NewSessionManager(filepath.Join(workspace, "sessions"))
 
 	return &AgentLoop{
 		bus:            msgBus,
@@ -179,6 +179,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		msg.ChatID,
 	)
 
+	// Save user message to session
+	al.sessions.AddMessage(msg.SessionKey, "user", msg.Content)
+
 	iteration := 0
 	var finalContent string
 
@@ -277,6 +280,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		}
 		messages = append(messages, assistantMsg)
 
+		// Save assistant message with tool calls to session
+		al.sessions.AddFullMessage(msg.SessionKey, assistantMsg)
+
 		for _, tc := range response.ToolCalls {
 			// Log tool call with arguments preview
 			argsJSON, _ := json.Marshal(tc.Arguments)
@@ -287,7 +293,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 					"iteration":  iteration,
 				})
 
-			result, err := al.tools.Execute(ctx, tc.Name, tc.Arguments)
+			result, err := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, msg.Channel, msg.ChatID)
 			if err != nil {
 				result = fmt.Sprintf("Error: %v", err)
 			}
@@ -298,6 +304,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 				ToolCallID: tc.ID,
 			}
 			messages = append(messages, toolResultMsg)
+
+			// Save tool result message to session
+			al.sessions.AddFullMessage(msg.SessionKey, toolResultMsg)
 		}
 	}
 
@@ -305,7 +314,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		finalContent = "I've completed processing but have no response to give."
 	}
 
-	al.sessions.AddMessage(msg.SessionKey, "user", msg.Content)
+	// Save final assistant message to session
 	al.sessions.AddMessage(msg.SessionKey, "assistant", finalContent)
 	al.sessions.Save(al.sessions.GetOrCreate(msg.SessionKey))
 
@@ -369,6 +378,9 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		originChannel,
 		originChatID,
 	)
+
+	// Save user message to session with system message marker
+	al.sessions.AddMessage(sessionKey, "user", fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content))
 
 	iteration := 0
 	var finalContent string
@@ -446,6 +458,9 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		}
 		messages = append(messages, assistantMsg)
 
+		// Save assistant message with tool calls to session
+		al.sessions.AddFullMessage(sessionKey, assistantMsg)
+
 		for _, tc := range response.ToolCalls {
 			result, err := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, msg.Channel, msg.ChatID)
 			if err != nil {
@@ -458,6 +473,9 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 				ToolCallID: tc.ID,
 			}
 			messages = append(messages, toolResultMsg)
+
+			// Save tool result message to session
+			al.sessions.AddFullMessage(sessionKey, toolResultMsg)
 		}
 	}
 
@@ -465,8 +483,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		finalContent = "Background task completed."
 	}
 
-	// Save to session with system message marker
-	al.sessions.AddMessage(sessionKey, "user", fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content))
+	// Save final assistant message to session
 	al.sessions.AddMessage(sessionKey, "assistant", finalContent)
 	al.sessions.Save(al.sessions.GetOrCreate(sessionKey))
 
@@ -475,6 +492,13 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 			"iterations":   iteration,
 			"final_length": len(finalContent),
 		})
+
+	// Send response back to the original channel
+	al.bus.PublishOutbound(bus.OutboundMessage{
+		Channel: originChannel,
+		ChatID:  originChatID,
+		Content: finalContent,
+	})
 
 	return finalContent, nil
 }
