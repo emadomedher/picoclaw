@@ -45,7 +45,8 @@ Edit your `~/.picoclaw/config.json`:
       "access_token": "syt_YOUR_ACCESS_TOKEN_HERE",
       "device_id": "",
       "allow_from": [],
-      "join_on_invite": true
+      "join_on_invite": true,
+      "require_mention_in_group": true
     }
   }
 }
@@ -60,6 +61,7 @@ Edit your `~/.picoclaw/config.json`:
 - **`device_id`**: (Optional) Specific device ID, leave empty to auto-generate
 - **`allow_from`**: (Optional) List of Matrix user IDs allowed to interact with the bot. Empty array = allow all
 - **`join_on_invite`**: Set to `true` to auto-join rooms when invited
+- **`require_mention_in_group`**: (Default: `true`) Only respond in group chats (3+ members) when the bot is mentioned. Set to `false` to respond to all messages in groups
 
 ### Access Control Example
 

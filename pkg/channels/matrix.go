@@ -161,8 +161,8 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		"is_group_chat": isGroup,
 	})
 
-	// In group chats, only respond if mentioned
-	if isGroup {
+	// In group chats, check mention requirement
+	if isGroup && c.matrixConfig.RequireMentionInGroup {
 		mentioned := c.isBotMentioned(msgEvt, c.client.UserID)
 		if !mentioned {
 			logger.InfoCF("matrix", "Ignoring group message (not mentioned)", map[string]interface{}{

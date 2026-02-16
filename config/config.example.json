@@ -76,7 +76,8 @@
       "access_token": "YOUR_MATRIX_ACCESS_TOKEN",
       "device_id": "",
       "allow_from": [],
-      "join_on_invite": true
+      "join_on_invite": true,
+      "require_mention_in_group": true
     }
   },
   "providers": {
