@@ -151,6 +151,34 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		"content":  messageText,
 	})
 
+	// Check if it's a group chat
+	memberCount := c.getRoomMemberCount(ctx, evt.RoomID)
+	isGroup := memberCount > 2
+
+	logger.InfoCF("matrix", "Message context", map[string]interface{}{
+		"room":          roomName,
+		"member_count":  memberCount,
+		"is_group_chat": isGroup,
+	})
+
+	// In group chats, only respond if mentioned
+	if isGroup {
+		mentioned := c.isBotMentioned(msgEvt, c.client.UserID)
+		if !mentioned {
+			logger.InfoCF("matrix", "Ignoring group message (not mentioned)", map[string]interface{}{
+				"room":   roomName,
+				"sender": senderName,
+			})
+			return
+		}
+		logger.InfoCF("matrix", "Bot mentioned in group chat", map[string]interface{}{
+			"room":   roomName,
+			"sender": senderName,
+		})
+		// Remove the mention from the message text
+		messageText = c.removeMention(messageText, c.client.UserID)
+	}
+
 	// Prepare metadata
 	metadata := map[string]string{
 		"sender_name":  senderName,
@@ -158,8 +186,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		"timestamp":    fmt.Sprintf("%d", evt.Timestamp),
 	}
 
-	// Check if it's a group chat
-	if c.isGroupChat(ctx, evt.RoomID) {
+	if isGroup {
 		metadata["is_group_chat"] = "true"
 	}
 
@@ -201,13 +228,17 @@ func (c *MatrixChannel) getUserDisplayName(ctx context.Context, roomID id.RoomID
 	return userID.String()
 }
 
-func (c *MatrixChannel) isGroupChat(ctx context.Context, roomID id.RoomID) bool {
+func (c *MatrixChannel) getRoomMemberCount(ctx context.Context, roomID id.RoomID) int {
 	// Get joined members count
 	resp, err := c.client.JoinedMembers(ctx, roomID)
 	if err != nil {
-		return false
+		return 0
 	}
-	return len(resp.Joined) > 2
+	return len(resp.Joined)
+}
+
+func (c *MatrixChannel) isGroupChat(ctx context.Context, roomID id.RoomID) bool {
+	return c.getRoomMemberCount(ctx, roomID) > 2
 }
 
 func (c *MatrixChannel) getReplyToID(msgEvt *event.MessageEventContent) string {
@@ -215,6 +246,50 @@ func (c *MatrixChannel) getReplyToID(msgEvt *event.MessageEventContent) string {
 		return msgEvt.RelatesTo.InReplyTo.EventID.String()
 	}
 	return ""
+}
+
+func (c *MatrixChannel) isBotMentioned(msgEvt *event.MessageEventContent, botUserID id.UserID) bool {
+	// Check plain text body for mention
+	if strings.Contains(msgEvt.Body, botUserID.String()) {
+		return true
+	}
+
+	// Check formatted body (HTML) for mention
+	if msgEvt.Format == event.FormatHTML && strings.Contains(msgEvt.FormattedBody, botUserID.String()) {
+		return true
+	}
+
+	// Check for displayname mention (e.g., "wanda" or "Wanda")
+	// This is less reliable but common in Matrix clients
+	displayName := strings.TrimPrefix(botUserID.String(), "@")
+	displayName = strings.Split(displayName, ":")[0] // Get localpart only
+	lowerBody := strings.ToLower(msgEvt.Body)
+	if strings.Contains(lowerBody, strings.ToLower(displayName)) {
+		return true
+	}
+
+	return false
+}
+
+func (c *MatrixChannel) removeMention(text string, botUserID id.UserID) string {
+	// Remove @user:homeserver mentions
+	text = strings.ReplaceAll(text, botUserID.String(), "")
+	
+	// Remove localpart mentions (e.g., "wanda")
+	displayName := strings.TrimPrefix(botUserID.String(), "@")
+	displayName = strings.Split(displayName, ":")[0]
+	
+	// Remove with @ prefix
+	text = strings.ReplaceAll(text, "@"+displayName, "")
+	
+	// Remove standalone displayname at start/end
+	text = strings.TrimPrefix(text, displayName)
+	text = strings.TrimSuffix(text, displayName)
+	
+	// Clean up extra whitespace
+	text = strings.TrimSpace(text)
+	
+	return text
 }
 
 func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
