@@ -2,30 +2,27 @@
 
 This guide shows how to deploy PicoClaw with real credentials while keeping the repo clean and generic.
 
-## Repository vs Deployment
+## Simple Deployment Pattern
 
 **Repository (committed to git):**
-- `config/config.json` → Generic placeholders, no secrets
-- `docker-compose.yml` → Generic setup, uses `PICOCLAW_CONFIG` env var
-- `docker-compose.override.yml.example` → Example deployment config
+- `config/config.example.json` → Generic placeholder config for reference
+- `docker-compose.yml` → Mounts `~/.picoclaw/config.json` (outside repo)
 
-**Deployment (NOT committed to git):**
-- `~/.picoclaw/config.json` → Real credentials (Matrix tokens, API keys, etc.)
-- `docker-compose.override.yml` → Your specific volume mounts and env vars
-- `.gitignore` → Blocks override file from being committed
+**Your Deployment (NOT in git):**
+- `~/.picoclaw/config.json` → Your real config with credentials
+
+The docker-compose.yml **always mounts from outside the repo**. Just create your config at `~/.picoclaw/config.json` and you're good to go.
 
 ## Quick Start
 
-### 1. Create Your Deployment Config
-
-Copy the example and customize with real credentials:
+### 1. Create Your Config
 
 ```bash
-# Create config directory outside repo
+# Create config directory
 mkdir -p ~/.picoclaw
 
-# Create your config with real credentials
-cat > ~/.picoclaw/config.json <<EOF
+# Copy example and edit with your credentials
+cat > ~/.picoclaw/config.json <<'EOF'
 {
   "agents": {
     "defaults": {
@@ -70,30 +67,11 @@ EOF
 chmod 600 ~/.picoclaw/config.json
 ```
 
-### 2. Create Docker Compose Override
+### 2. Deploy
 
 ```bash
 cd ~/code/picoclaw
 
-# Copy the example
-cp docker-compose.override.yml.example docker-compose.override.yml
-
-# Edit it to point to your config
-cat > docker-compose.override.yml <<EOF
-services:
-  picoclaw-gateway:
-    volumes:
-      - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
-
-  picoclaw-agent:
-    volumes:
-      - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
-EOF
-```
-
-### 3. Deploy
-
-```bash
 # Build the image
 docker compose build
 
@@ -104,18 +82,13 @@ docker compose --profile gateway up -d
 docker compose logs -f picoclaw-gateway
 ```
 
-## Using Environment Variable
+That's it! The compose file automatically mounts `~/.picoclaw/config.json`.
 
-Alternatively, set `PICOCLAW_CONFIG` environment variable:
+## Multiple Bot Deployments
 
-```bash
-export PICOCLAW_CONFIG=~/.picoclaw/config.json
-docker compose --profile gateway up -d
-```
+To run multiple bots (e.g., Wanda, Aria) with different configs:
 
-## Multiple Deployments (Multiple Bots)
-
-Deploy multiple bot instances with different configs:
+### Option 1: Multiple Config Files + Container Names
 
 ```bash
 # Wanda's config
@@ -137,47 +110,60 @@ services:
     container_name: picoclaw-wanda
     volumes:
       - ~/.picoclaw/wanda-config.json:/root/.picoclaw/config.json:ro
+      - ~/.codex:/root/.codex:ro
+      - picoclaw-wanda-workspace:/root/.picoclaw/workspace
+
+volumes:
+  picoclaw-wanda-workspace:
 ```
+
+Deploy each bot:
 
 ```bash
 docker compose -f docker-compose.wanda.yml up -d
 docker compose -f docker-compose.aria.yml up -d
 ```
 
-## Security Best Practices
+### Option 2: Environment Variable Override
 
-### Config File Protection
+If you need to switch configs temporarily:
 
 ```bash
-# Restrict permissions (owner read/write only)
+# Override the mount path
+docker compose run --rm \
+  -v ~/.picoclaw/aria-config.json:/root/.picoclaw/config.json:ro \
+  picoclaw-agent -m "Hello"
+```
+
+## Security Best Practices
+
+### Protect Your Config
+
+```bash
+# Only you can read/write
 chmod 600 ~/.picoclaw/config.json
 
-# Never commit configs with secrets
-git status  # Should NOT show your deployment config
+# Verify it's not in the repo
+cd ~/code/picoclaw
+git status  # Should NOT show ~/.picoclaw/config.json
 ```
 
-### Secrets Management
+### Never Commit Secrets
 
-For production, use secrets management:
+The `.gitignore` already blocks common config locations, but **never** add configs with secrets to the repo:
 
-```yaml
-# docker-compose.override.yml
-services:
-  picoclaw-gateway:
-    environment:
-      - MATRIX_ACCESS_TOKEN_FILE=/run/secrets/matrix_token
-    secrets:
-      - matrix_token
+```bash
+# ❌ WRONG - DO NOT DO THIS
+git add ~/.picoclaw/config.json
 
-secrets:
-  matrix_token:
-    file: ~/.picoclaw/secrets/matrix_token
+# ✅ RIGHT - Config stays outside repo
+ls ~/.picoclaw/config.json  # Exists outside git
 ```
 
-### Container Security
+### Container Security Hardening
 
 ```yaml
-# docker-compose.override.yml
+# docker-compose.override.yml (optional hardening)
 services:
   picoclaw-gateway:
     read_only: true
@@ -185,25 +171,29 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100M
 ```
 
 ## Kubernetes Deployment
 
-For K8s deployments, use ConfigMaps and Secrets:
+For K8s, use Secrets and ConfigMaps:
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: picoclaw-matrix-token
+  name: wanda-matrix-token
+  namespace: agents
 type: Opaque
 stringData:
-  access_token: syt_YOUR_TOKEN_HERE
+  access_token: syt_d2FuZGE_vjlXtHrcGFLicqafLMdF_1Mfb0K
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: picoclaw-config
+  name: wanda-config
+  namespace: agents
 data:
   config.json: |
     {
@@ -212,7 +202,6 @@ data:
           "enabled": true,
           "homeserver": "https://matrix.medher.online",
           "user_id": "@wanda:matrix.medher.online",
-          "access_token": "",  # Mounted from secret
           "join_on_invite": true
         }
       }
@@ -222,53 +211,86 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: picoclaw-wanda
+  namespace: agents
 spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: picoclaw-wanda
   template:
+    metadata:
+      labels:
+        app: picoclaw-wanda
     spec:
       containers:
       - name: picoclaw
+        image: your-registry/picoclaw:latest
+        command: ["picoclaw", "gateway"]
         volumeMounts:
         - name: config
           mountPath: /root/.picoclaw/config.json
           subPath: config.json
+          readOnly: true
+        - name: workspace
+          mountPath: /root/.picoclaw/workspace
         env:
         - name: MATRIX_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
-              name: picoclaw-matrix-token
+              name: wanda-matrix-token
               key: access_token
       volumes:
       - name: config
         configMap:
-          name: picoclaw-config
+          name: wanda-config
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: picoclaw-wanda-workspace
 ```
+
+Then inject the secret at runtime or use init containers to merge config + secret.
 
 ## Troubleshooting
 
-### Config not loading
+### Config file not found
 
 ```bash
-# Check if override is applied
-docker compose config | grep config.json
+# Check if config exists
+ls -la ~/.picoclaw/config.json
 
-# Verify mount
+# If missing, copy from example
+cp ~/code/picoclaw/config/config.example.json ~/.picoclaw/config.json
+# Then edit with your credentials
+```
+
+### Permission denied
+
+```bash
+# Docker needs read access
+chmod 644 ~/.picoclaw/config.json
+
+# Or more restrictive (owner only)
+chmod 600 ~/.picoclaw/config.json
+```
+
+### Verify config is mounted
+
+```bash
+# Check what config Docker sees
 docker compose --profile gateway run --rm picoclaw-gateway cat /root/.picoclaw/config.json
 ```
 
 ### Secrets visible in logs
 
 ```bash
-# Check for accidentally logged secrets
-docker compose logs picoclaw-gateway | grep -i "token\|password\|key"
-```
-
-### Permission denied
-
-```bash
-# Fix permissions on mounted config
-chmod 644 ~/.picoclaw/config.json  # Docker needs read access
+# Never log full config!
+# If you see secrets in logs, file a bug report
+docker compose logs picoclaw-gateway | grep -i "token\|password\|secret"
 ```
 
 ---
 
-**Remember:** The repo stays generic. Your deployment config lives outside git.
+**Remember:** 
+- Repo = generic code + example config
+- Deployment = your config at `~/.picoclaw/config.json`
+- docker-compose.yml automatically mounts it
