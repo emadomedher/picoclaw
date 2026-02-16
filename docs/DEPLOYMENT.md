@@ -52,16 +52,16 @@ Example config with Matrix:
   "agents": {
     "defaults": {
       "workspace": "/root/.picoclaw/workspace",
-      "provider": "codex-cli",
-      "model": "gpt-5.2",
+      "provider": "openai",
+      "model": "gpt-4",
       "max_tokens": 8192
     }
   },
   "channels": {
     "matrix": {
       "enabled": true,
-      "homeserver": "https://matrix.medher.online",
-      "user_id": "@wanda:matrix.medher.online",
+      "homeserver": "https://matrix.org",
+      "user_id": "@mybot:matrix.org",
       "access_token": "syt_YOUR_REAL_TOKEN_HERE",
       "join_on_invite": true
     }
@@ -89,13 +89,13 @@ docker compose logs -f picoclaw-gateway
 Deploy multiple bots with different configs using environment variables:
 
 ```bash
-# Wanda
-PICOCLAW_CONFIG=~/.picoclaw/wanda-config.json \
-  docker compose -p wanda --profile gateway up -d
+# Bot 1
+PICOCLAW_CONFIG=~/.picoclaw/bot1-config.json \
+  docker compose -p bot1 --profile gateway up -d
 
-# Aria
-PICOCLAW_CONFIG=~/.picoclaw/aria-config.json \
-  docker compose -p aria --profile gateway up -d
+# Bot 2
+PICOCLAW_CONFIG=~/.picoclaw/bot2-config.json \
+  docker compose -p bot2 --profile gateway up -d
 
 # Check both
 docker ps | grep picoclaw
@@ -123,8 +123,8 @@ echo "✓ Deployed $BOT_NAME"
 
 Usage:
 ```bash
-./deploy-bot.sh wanda
-./deploy-bot.sh aria
+./deploy-bot.sh bot1
+./deploy-bot.sh bot2
 ```
 
 ## Using .env File
@@ -133,7 +133,7 @@ Create a `.env` file in the repo root (gitignored):
 
 ```bash
 # .env
-PICOCLAW_CONFIG=/home/emad/.picoclaw/wanda-config.json
+PICOCLAW_CONFIG=/home/user/.picoclaw/mybot-config.json
 ```
 
 Then just run:
@@ -210,7 +210,7 @@ For K8s, use ConfigMaps and Secrets:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: wanda-matrix-token
+  name: picoclaw-matrix-token
 type: Opaque
 stringData:
   access_token: syt_YOUR_TOKEN_HERE
@@ -218,15 +218,15 @@ stringData:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: wanda-config
+  name: picoclaw-config
 data:
   config.json: |
     {
       "channels": {
         "matrix": {
           "enabled": true,
-          "homeserver": "https://matrix.medher.online",
-          "user_id": "@wanda:matrix.medher.online"
+          "homeserver": "https://matrix.org",
+          "user_id": "@mybot:matrix.org"
         }
       }
     }
@@ -234,12 +234,12 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: picoclaw-wanda
+  name: picoclaw-bot
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: picoclaw-wanda
+      app: picoclaw-bot
   template:
     spec:
       containers:
@@ -254,12 +254,12 @@ spec:
         - name: MATRIX_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
-              name: wanda-matrix-token
+              name: picoclaw-matrix-token
               key: access_token
       volumes:
       - name: config
         configMap:
-          name: wanda-config
+          name: picoclaw-config
 ```
 
 ## Troubleshooting
