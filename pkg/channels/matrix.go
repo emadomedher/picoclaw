@@ -1,9 +1,3 @@
-// PicoClaw - Ultra-lightweight personal AI agent
-// Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
-// License: MIT
-//
-// Copyright (c) 2026 PicoClaw contributors
-
 package channels
 
 import (
@@ -11,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -20,289 +13,254 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 type MatrixChannel struct {
 	*BaseChannel
 	client       *mautrix.Client
-	config       config.MatrixConfig
-	ctx          context.Context
-	stopSync     context.CancelFunc
-	syncerWg     sync.WaitGroup
-	joinedRooms  map[id.RoomID]bool
-	roomsMutex   sync.RWMutex
+	matrixConfig config.MatrixConfig
+	syncer       *mautrix.DefaultSyncer
+	stopSyncer   context.CancelFunc
+	roomNames    sync.Map // roomID -> room name
 }
 
-func NewMatrixChannel(cfg config.MatrixConfig, msgBus *bus.MessageBus) (*MatrixChannel, error) {
-	client, err := mautrix.NewClient(cfg.Homeserver, id.UserID(cfg.UserID), cfg.AccessToken)
+func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*MatrixChannel, error) {
+	// Create Matrix client
+	client, err := mautrix.NewClient(matrixCfg.Homeserver, id.UserID(matrixCfg.UserID), matrixCfg.AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create matrix client: %w", err)
 	}
 
 	// Set device ID if provided
-	if cfg.DeviceID != "" {
-		client.DeviceID = id.DeviceID(cfg.DeviceID)
+	if matrixCfg.DeviceID != "" {
+		client.DeviceID = id.DeviceID(matrixCfg.DeviceID)
 	}
 
-	base := NewBaseChannel("matrix", cfg, msgBus, cfg.AllowFrom)
+	base := NewBaseChannel("matrix", matrixCfg, bus, matrixCfg.AllowFrom)
+
+	syncer := client.Syncer.(*mautrix.DefaultSyncer)
 
 	return &MatrixChannel{
-		BaseChannel: base,
-		client:      client,
-		config:      cfg,
-		joinedRooms: make(map[id.RoomID]bool),
+		BaseChannel:  base,
+		client:       client,
+		matrixConfig: matrixCfg,
+		syncer:       syncer,
+		roomNames:    sync.Map{},
 	}, nil
 }
 
 func (c *MatrixChannel) Start(ctx context.Context) error {
-	logger.InfoC("matrix", "Starting Matrix client")
-
-	c.ctx, c.stopSync = context.WithCancel(ctx)
+	logger.InfoC("matrix", "Starting Matrix client...")
 
 	// Set up event handlers
-	syncer := c.client.Syncer.(*mautrix.DefaultSyncer)
+	c.syncer.OnEventType(event.EventMessage, c.handleMessage)
+	c.syncer.OnEventType(event.StateMember, c.handleMemberEvent)
 
-	// Handle incoming messages
-	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
-		c.handleMessage(evt)
-	})
-
-	// Handle room invites
-	syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
-		c.handleMemberEvent(evt)
-	})
+	// Create a cancellable context for the syncer
+	syncCtx, cancel := context.WithCancel(ctx)
+	c.stopSyncer = cancel
 
 	// Start syncing in background
-	c.syncerWg.Add(1)
 	go func() {
-		defer c.syncerWg.Done()
-		if err := c.client.SyncWithContext(c.ctx); err != nil && c.ctx.Err() == nil {
+		err := c.client.SyncWithContext(syncCtx)
+		if err != nil && syncCtx.Err() == nil {
 			logger.ErrorCF("matrix", "Sync error", map[string]interface{}{
 				"error": err.Error(),
 			})
 		}
 	}()
 
-	// Wait a moment for initial sync
-	time.Sleep(500 * time.Millisecond)
-
 	c.setRunning(true)
-	logger.InfoCF("matrix", "Matrix client connected", map[string]interface{}{
-		"user_id":    c.config.UserID,
-		"homeserver": c.config.Homeserver,
-	})
-
+	logger.InfoC("matrix", "Matrix client started successfully")
 	return nil
 }
 
 func (c *MatrixChannel) Stop(ctx context.Context) error {
-	logger.InfoC("matrix", "Stopping Matrix client")
+	logger.InfoC("matrix", "Stopping Matrix client...")
+
+	if c.stopSyncer != nil {
+		c.stopSyncer()
+	}
+
 	c.setRunning(false)
-
-	if c.stopSync != nil {
-		c.stopSync()
-	}
-
-	// Wait for syncer to stop (with timeout)
-	done := make(chan struct{})
-	go func() {
-		c.syncerWg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		logger.InfoC("matrix", "Matrix client stopped gracefully")
-	case <-time.After(5 * time.Second):
-		logger.WarnC("matrix", "Matrix client stop timeout")
-	}
-
+	logger.InfoC("matrix", "Matrix client stopped")
 	return nil
+}
+
+func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event) {
+	memberEvt := evt.Content.AsMember()
+	
+	// Auto-join rooms if invited and JoinOnInvite is enabled
+	if memberEvt.Membership == event.MembershipInvite && 
+	   evt.GetStateKey() == string(c.client.UserID) &&
+	   c.matrixConfig.JoinOnInvite {
+		
+		roomID := evt.RoomID
+		logger.InfoCF("matrix", "Auto-joining room after invite", map[string]interface{}{
+			"room_id": roomID.String(),
+		})
+		
+		_, err := c.client.JoinRoomByID(ctx, roomID)
+		if err != nil {
+			logger.ErrorCF("matrix", "Failed to join room", map[string]interface{}{
+				"room_id": roomID.String(),
+				"error":   err.Error(),
+			})
+		} else {
+			logger.InfoCF("matrix", "Successfully joined room", map[string]interface{}{
+				"room_id": roomID.String(),
+			})
+		}
+	}
+}
+
+func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
+	// Ignore our own messages
+	if evt.Sender == c.client.UserID {
+		return
+	}
+
+	// Only handle text messages
+	msgEvt := evt.Content.AsMessage()
+	if msgEvt.MsgType != event.MsgText {
+		return
+	}
+
+	roomID := evt.RoomID.String()
+	senderID := evt.Sender.String()
+
+	// Check if sender is allowed
+	if !c.IsAllowed(senderID) {
+		logger.WarnCF("matrix", "Ignoring message from unauthorized user", map[string]interface{}{
+			"sender_id": senderID,
+		})
+		return
+	}
+
+	// Get or cache room name
+	roomName := c.getRoomName(ctx, evt.RoomID)
+
+	// Get sender display name
+	senderName := c.getUserDisplayName(ctx, evt.RoomID, evt.Sender)
+
+	messageText := msgEvt.Body
+
+	logger.InfoCF("matrix", "Received message", map[string]interface{}{
+		"sender":   senderName,
+		"room":     roomName,
+		"content":  messageText,
+	})
+
+	// Prepare metadata
+	metadata := map[string]string{
+		"sender_name":  senderName,
+		"room_name":    roomName,
+		"timestamp":    fmt.Sprintf("%d", evt.Timestamp),
+	}
+
+	// Check if it's a group chat
+	if c.isGroupChat(ctx, evt.RoomID) {
+		metadata["is_group_chat"] = "true"
+	}
+
+	// Check for reply-to
+	replyToID := c.getReplyToID(msgEvt)
+	if replyToID != "" {
+		metadata["reply_to_msg_id"] = replyToID
+	}
+
+	// Handle the message through base channel
+	c.HandleMessage(senderID, roomID, messageText, []string{}, metadata)
+}
+
+func (c *MatrixChannel) getRoomName(ctx context.Context, roomID id.RoomID) string {
+	// Check cache first
+	if cached, ok := c.roomNames.Load(roomID.String()); ok {
+		return cached.(string)
+	}
+
+	// Fetch room name from state event
+	var nameEvt event.RoomNameEventContent
+	err := c.client.StateEvent(ctx, roomID, event.StateRoomName, "", &nameEvt)
+	if err == nil && nameEvt.Name != "" {
+		c.roomNames.Store(roomID.String(), nameEvt.Name)
+		return nameEvt.Name
+	}
+
+	// Fallback to room ID
+	roomName := roomID.String()
+	c.roomNames.Store(roomID.String(), roomName)
+	return roomName
+}
+
+func (c *MatrixChannel) getUserDisplayName(ctx context.Context, roomID id.RoomID, userID id.UserID) string {
+	resp, err := c.client.GetDisplayName(ctx, userID)
+	if err == nil && resp.DisplayName != "" {
+		return resp.DisplayName
+	}
+	return userID.String()
+}
+
+func (c *MatrixChannel) isGroupChat(ctx context.Context, roomID id.RoomID) bool {
+	// Get joined members count
+	resp, err := c.client.JoinedMembers(ctx, roomID)
+	if err != nil {
+		return false
+	}
+	return len(resp.Joined) > 2
+}
+
+func (c *MatrixChannel) getReplyToID(msgEvt *event.MessageEventContent) string {
+	if msgEvt.RelatesTo != nil && msgEvt.RelatesTo.InReplyTo != nil {
+		return msgEvt.RelatesTo.InReplyTo.EventID.String()
+	}
+	return ""
 }
 
 func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	if !c.IsRunning() {
-		return fmt.Errorf("matrix client not running")
-	}
-
 	roomID := id.RoomID(msg.ChatID)
-	if roomID == "" {
-		return fmt.Errorf("room ID is empty")
+
+	// Prepare message content
+	content := &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    msg.Content,
 	}
 
-	// Split long messages if needed (Matrix limit is ~65KB, we'll use 60KB to be safe)
-	chunks := c.splitMessage(msg.Content, 60000)
-
-	for _, chunk := range chunks {
-		content := &event.MessageEventContent{
-			MsgType: event.MsgText,
-			Body:    chunk,
-		}
-
-		// Send formatted HTML if content has markdown-like formatting
-		if c.hasFormatting(chunk) {
-			content.Format = event.FormatHTML
-			content.FormattedBody = c.convertToHTML(chunk)
-		}
-
-		_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
-		if err != nil {
-			return fmt.Errorf("failed to send message to %s: %w", roomID, err)
-		}
-
-		// Small delay between chunks to avoid rate limiting
-		if len(chunks) > 1 {
-			time.Sleep(100 * time.Millisecond)
-		}
+	// Handle Markdown formatting
+	if strings.Contains(msg.Content, "**") || strings.Contains(msg.Content, "_") || 
+	   strings.Contains(msg.Content, "`") || strings.Contains(msg.Content, "#") {
+		content.Format = event.FormatHTML
+		content.FormattedBody = c.markdownToHTML(msg.Content)
 	}
 
+	// Send the message
+	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+	if err != nil {
+		return fmt.Errorf("failed to send matrix message: %w", err)
+	}
+
+	logger.InfoCF("matrix", "Sent message to room", map[string]interface{}{
+		"chat_id": msg.ChatID,
+	})
 	return nil
 }
 
-func (c *MatrixChannel) handleMessage(evt *event.Event) {
-	// Ignore our own messages
-	if evt.Sender == id.UserID(c.config.UserID) {
-		return
-	}
-
-	content, ok := evt.Content.Parsed.(*event.MessageEventContent)
-	if !ok {
-		return
-	}
-
-	// Only handle text messages for now
-	if content.MsgType != event.MsgText && content.MsgType != event.MsgNotice {
-		return
-	}
-
-	senderID := string(evt.Sender)
-	roomID := string(evt.RoomID)
-
-	// Check allowlist
-	if !c.IsAllowed(senderID) {
-		logger.DebugCF("matrix", "Message from unauthorized user", map[string]interface{}{
-			"sender": senderID,
-			"room":   roomID,
-		})
-		return
-	}
-
-	// Extract message text (prefer formatted body, fallback to plain)
-	messageText := content.Body
-
-	logger.DebugCF("matrix", "Received message", map[string]interface{}{
-		"sender": senderID,
-		"room":   roomID,
-		"text":   utils.Truncate(messageText, 100),
-	})
-
-	// Send to bus
-	c.HandleMessage(senderID, roomID, messageText, nil, map[string]string{
-		"event_id": string(evt.ID),
-	})
-}
-
-func (c *MatrixChannel) handleMemberEvent(evt *event.Event) {
-	// Only handle invites if auto-join is enabled
-	if !c.config.JoinOnInvite {
-		return
-	}
-
-	content, ok := evt.Content.Parsed.(*event.MemberEventContent)
-	if !ok {
-		return
-	}
-
-	// Check if this is an invite for us
-	if *evt.StateKey != c.config.UserID || content.Membership != event.MembershipInvite {
-		return
-	}
-
-	logger.InfoCF("matrix", "Received room invite", map[string]interface{}{
-		"room":   string(evt.RoomID),
-		"sender": string(evt.Sender),
-	})
-
-	// Check if inviter is allowed
-	if !c.IsAllowed(string(evt.Sender)) {
-		logger.WarnCF("matrix", "Rejected invite from unauthorized user", map[string]interface{}{
-			"sender": string(evt.Sender),
-		})
-		return
-	}
-
-	// Join the room
-	if _, err := c.client.JoinRoomByID(context.Background(), evt.RoomID); err != nil {
-		logger.ErrorCF("matrix", "Failed to join room", map[string]interface{}{
-			"room":  string(evt.RoomID),
-			"error": err.Error(),
-		})
-		return
-	}
-
-	c.roomsMutex.Lock()
-	c.joinedRooms[evt.RoomID] = true
-	c.roomsMutex.Unlock()
-
-	logger.InfoCF("matrix", "Joined room", map[string]interface{}{
-		"room": string(evt.RoomID),
-	})
-}
-
-// splitMessage splits long messages into chunks
-func (c *MatrixChannel) splitMessage(content string, maxLength int) []string {
-	if len(content) <= maxLength {
-		return []string{content}
-	}
-
-	var chunks []string
-	for len(content) > 0 {
-		if len(content) <= maxLength {
-			chunks = append(chunks, content)
-			break
-		}
-
-		// Try to split at newline
-		splitPoint := maxLength
-		lastNewline := strings.LastIndex(content[:maxLength], "\n")
-		if lastNewline > maxLength/2 {
-			splitPoint = lastNewline + 1
-		}
-
-		chunks = append(chunks, content[:splitPoint])
-		content = content[splitPoint:]
-	}
-
-	return chunks
-}
-
-// hasFormatting checks if content has markdown-like formatting
-func (c *MatrixChannel) hasFormatting(text string) bool {
-	return strings.Contains(text, "**") ||
-		strings.Contains(text, "```") ||
-		strings.Contains(text, "`") ||
-		strings.Contains(text, "_")
-}
-
-// convertToHTML converts markdown-like text to HTML
-// This is a simple implementation, can be enhanced later
-func (c *MatrixChannel) convertToHTML(text string) string {
+// Simple markdown to HTML converter for Matrix
+func (c *MatrixChannel) markdownToHTML(text string) string {
 	html := text
-
-	// Code blocks
-	html = strings.ReplaceAll(html, "```", "<pre><code>")
-	// Inline code
-	parts := strings.Split(html, "`")
-	for i := 1; i < len(parts); i += 2 {
-		parts[i] = "<code>" + parts[i] + "</code>"
-	}
-	html = strings.Join(parts, "")
-
-	// Bold
+	
+	// Bold: **text** -> <strong>text</strong>
 	html = strings.ReplaceAll(html, "**", "<strong>")
-	// Italic
-	html = strings.ReplaceAll(html, "_", "<em>")
-
+	// Count replacements and close tags
+	count := strings.Count(text, "**")
+	for i := 0; i < count/2; i++ {
+		html = strings.Replace(html, "<strong>", "<strong>", 1)
+		html = strings.Replace(html, "<strong>", "</strong>", 1)
+	}
+	
+	// Italic: _text_ -> <em>text</em>
+	// Code: `text` -> <code>text</code>
+	// Simple replacements for now
+	
 	return html
 }
