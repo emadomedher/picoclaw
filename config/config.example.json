@@ -129,6 +129,10 @@
         "api_key": "YOUR_BRAVE_API_KEY",
         "max_results": 5
       }
+    },
+    "whisper": {
+      "enabled": true,
+      "api_base": "http://localhost:8200"
     }
   },
   "heartbeat": {

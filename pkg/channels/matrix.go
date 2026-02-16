@@ -3,8 +3,10 @@ package channels
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -13,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
 type MatrixChannel struct {
@@ -22,6 +25,7 @@ type MatrixChannel struct {
 	syncer       *mautrix.DefaultSyncer
 	stopSyncer   context.CancelFunc
 	roomNames    sync.Map // roomID -> room name
+	transcriber  voice.Transcriber
 }
 
 func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*MatrixChannel, error) {
@@ -46,7 +50,12 @@ func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*Matr
 		matrixConfig: matrixCfg,
 		syncer:       syncer,
 		roomNames:    sync.Map{},
+		transcriber:  nil,
 	}, nil
+}
+
+func (c *MatrixChannel) SetTranscriber(transcriber voice.Transcriber) {
+	c.transcriber = transcriber
 }
 
 func (c *MatrixChannel) Start(ctx context.Context) error {
@@ -120,12 +129,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	// Only handle text messages
 	msgEvt := evt.Content.AsMessage()
-	if msgEvt.MsgType != event.MsgText {
-		return
-	}
-
 	roomID := evt.RoomID.String()
 	senderID := evt.Sender.String()
 
@@ -144,11 +148,111 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	senderName := c.getUserDisplayName(ctx, evt.RoomID, evt.Sender)
 
 	messageText := msgEvt.Body
+	mediaPaths := []string{}
+	localFiles := []string{}
+
+	// Clean up temp files when done
+	defer func() {
+		for _, file := range localFiles {
+			if err := os.Remove(file); err != nil {
+				logger.DebugCF("matrix", "Failed to cleanup temp file", map[string]interface{}{
+					"file":  file,
+					"error": err.Error(),
+				})
+			}
+		}
+	}()
+
+	// Handle different message types
+	switch msgEvt.MsgType {
+	case event.MsgText:
+		// Text already in messageText
+		
+	case event.MsgImage:
+		// Download and process image
+		if msgEvt.URL != "" {
+			imagePath := c.downloadMedia(ctx, msgEvt.URL, msgEvt.Body, ".jpg")
+			if imagePath != "" {
+				localFiles = append(localFiles, imagePath)
+				mediaPaths = append(mediaPaths, imagePath)
+				if messageText != "" {
+					messageText += "\n"
+				}
+				messageText += fmt.Sprintf("[image: %s]", msgEvt.Body)
+			}
+		}
+		
+	case event.MsgAudio, event.MsgVideo:
+		// Download and transcribe audio/video
+		if msgEvt.URL != "" {
+			ext := ".ogg"
+			if msgEvt.MsgType == event.MsgVideo {
+				ext = ".mp4"
+			}
+			
+			mediaPath := c.downloadMedia(ctx, msgEvt.URL, msgEvt.Body, ext)
+			if mediaPath != "" {
+				localFiles = append(localFiles, mediaPath)
+				mediaPaths = append(mediaPaths, mediaPath)
+				
+				// Try transcription for audio/video
+				transcribedText := ""
+				if c.transcriber != nil && c.transcriber.IsAvailable() {
+					tCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+					
+					result, err := c.transcriber.Transcribe(tCtx, mediaPath)
+					if err != nil {
+						logger.ErrorCF("matrix", "Transcription failed", map[string]interface{}{
+							"error": err.Error(),
+							"path":  mediaPath,
+						})
+						transcribedText = fmt.Sprintf("[%s (transcription failed)]", msgEvt.MsgType)
+					} else {
+						transcribedText = fmt.Sprintf("[%s transcription: %s]", msgEvt.MsgType, result.Text)
+						logger.InfoCF("matrix", "Media transcribed successfully", map[string]interface{}{
+							"type": msgEvt.MsgType,
+							"text": result.Text,
+						})
+					}
+				} else {
+					transcribedText = fmt.Sprintf("[%s: %s]", msgEvt.MsgType, msgEvt.Body)
+				}
+				
+				if messageText != "" {
+					messageText += "\n"
+				}
+				messageText += transcribedText
+			}
+		}
+		
+	case event.MsgFile:
+		// Download generic file
+		if msgEvt.URL != "" {
+			filePath := c.downloadMedia(ctx, msgEvt.URL, msgEvt.Body, "")
+			if filePath != "" {
+				localFiles = append(localFiles, filePath)
+				mediaPaths = append(mediaPaths, filePath)
+				if messageText != "" {
+					messageText += "\n"
+				}
+				messageText += fmt.Sprintf("[file: %s]", msgEvt.Body)
+			}
+		}
+		
+	default:
+		// Unsupported message type
+		logger.DebugCF("matrix", "Ignoring unsupported message type", map[string]interface{}{
+			"type": msgEvt.MsgType,
+		})
+		return
+	}
 
 	logger.InfoCF("matrix", "Received message", map[string]interface{}{
 		"sender":   senderName,
 		"room":     roomName,
 		"content":  messageText,
+		"type":     msgEvt.MsgType,
 	})
 
 	// Check if it's a group chat
@@ -197,7 +301,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	}
 
 	// Handle the message through base channel
-	c.HandleMessage(senderID, roomID, messageText, []string{}, metadata)
+	c.HandleMessage(senderID, roomID, messageText, mediaPaths, metadata)
 }
 
 func (c *MatrixChannel) getRoomName(ctx context.Context, roomID id.RoomID) string {
@@ -321,6 +425,74 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
 }
 
 // Simple markdown to HTML converter for Matrix
+func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIString, filename, ext string) string {
+	if mxcURL == "" {
+		return ""
+	}
+
+	// Parse mxc:// URL
+	contentURI := mxcURL.ParseOrIgnore()
+	if contentURI.IsEmpty() {
+		logger.ErrorCF("matrix", "Invalid media URL", map[string]interface{}{
+			"mxc_url": string(mxcURL),
+		})
+		return ""
+	}
+
+	logger.DebugCF("matrix", "Downloading media", map[string]interface{}{
+		"mxc_url":  string(mxcURL),
+		"filename": filename,
+	})
+
+	// Download the file
+	data, err := c.client.DownloadBytes(ctx, contentURI)
+	if err != nil {
+		logger.ErrorCF("matrix", "Failed to download media", map[string]interface{}{
+			"error":   err.Error(),
+			"mxc_url": string(mxcURL),
+		})
+		return ""
+	}
+
+	// Determine file extension
+	if ext == "" {
+		// Try to detect extension from filename
+		if strings.Contains(filename, ".") {
+			parts := strings.Split(filename, ".")
+			ext = "." + parts[len(parts)-1]
+		} else {
+			ext = ".bin"
+		}
+	}
+
+	// Create temp file
+	tempFile, err := os.CreateTemp("", "matrix-media-*"+ext)
+	if err != nil {
+		logger.ErrorCF("matrix", "Failed to create temp file", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return ""
+	}
+	defer tempFile.Close()
+
+	// Write data to file
+	if _, err := tempFile.Write(data); err != nil {
+		logger.ErrorCF("matrix", "Failed to write media file", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Remove(tempFile.Name())
+		return ""
+	}
+
+	logger.InfoCF("matrix", "Media downloaded successfully", map[string]interface{}{
+		"path": tempFile.Name(),
+		"size": len(data),
+	})
+
+	return tempFile.Name()
+}
+
+
 func (c *MatrixChannel) markdownToHTML(text string) string {
 	html := text
 	

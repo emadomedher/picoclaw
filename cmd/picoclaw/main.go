@@ -597,8 +597,20 @@ func gatewayCmd() {
 	// Inject channel manager into agent loop for command handling
 	agentLoop.SetChannelManager(channelManager)
 
-	var transcriber *voice.GroqTranscriber
-	if cfg.Providers.Groq.APIKey != "" {
+	// Create transcriber (prefer Whisper over Groq)
+	var transcriber voice.Transcriber
+	if cfg.Tools.Whisper.Enabled {
+		transcriber = voice.NewWhisperTranscriber(cfg.Tools.Whisper.APIBase)
+		if transcriber.IsAvailable() {
+			logger.InfoC("voice", "Whisper STT transcription enabled")
+		} else {
+			logger.WarnC("voice", "Whisper STT configured but not available, falling back to Groq if configured")
+			transcriber = nil
+		}
+	}
+	
+	// Fallback to Groq if Whisper not available
+	if transcriber == nil && cfg.Providers.Groq.APIKey != "" {
 		transcriber = voice.NewGroqTranscriber(cfg.Providers.Groq.APIKey)
 		logger.InfoC("voice", "Groq voice transcription enabled")
 	}
@@ -620,6 +632,12 @@ func gatewayCmd() {
 			if sc, ok := slackChannel.(*channels.SlackChannel); ok {
 				sc.SetTranscriber(transcriber)
 				logger.InfoC("voice", "Groq transcription attached to Slack channel")
+			}
+		}
+		if matrixChannel, ok := channelManager.GetChannel("matrix"); ok {
+			if mc, ok := matrixChannel.(*channels.MatrixChannel); ok {
+				mc.SetTranscriber(transcriber)
+				logger.InfoC("voice", "Groq transcription attached to Matrix channel")
 			}
 		}
 	}
