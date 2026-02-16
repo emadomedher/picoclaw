@@ -1,0 +1,24 @@
+# docker-compose.override.yml.example
+#
+# Copy this to docker-compose.override.yml and customize for your deployment.
+# Docker Compose automatically applies overrides from docker-compose.override.yml
+#
+# DO NOT commit docker-compose.override.yml to git - it contains secrets!
+
+services:
+  picoclaw-gateway:
+    volumes:
+      # Mount your real config with credentials (outside the repo)
+      - ~/.picoclaw/wanda-config.json:/root/.picoclaw/config.json:ro
+      # Or use environment variable: PICOCLAW_CONFIG=/path/to/config.json
+
+  picoclaw-agent:
+    volumes:
+      # Same config for agent mode
+      - ~/.picoclaw/wanda-config.json:/root/.picoclaw/config.json:ro
+
+# Example: Override environment variables
+# services:
+#   picoclaw-gateway:
+#     environment:
+#       - LOG_LEVEL=debug

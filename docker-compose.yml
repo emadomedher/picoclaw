@@ -11,8 +11,11 @@ services:
     profiles:
       - agent
     volumes:
-      - ./config/config.json:/root/.picoclaw/config.json:ro
+      # Configuration file (mount your own config with real credentials)
+      - ${PICOCLAW_CONFIG:-./config/config.json}:/root/.picoclaw/config.json:ro
+      # Codex CLI auth directory
       - ~/.codex:/root/.codex:ro
+      # Persistent workspace (sessions, memory, logs)
       - picoclaw-workspace:/root/.picoclaw/workspace
     entrypoint: ["picoclaw", "agent"]
     stdin_open: true
@@ -31,8 +34,10 @@ services:
     profiles:
       - gateway
     volumes:
-      # Configuration file
-      - ./config/config.json:/root/.picoclaw/config.json:ro
+      # Configuration file (mount your own config with real credentials)
+      # For development: use ./config/config.json (in repo, generic)
+      # For deployment: use ~/.picoclaw/config.json (outside repo, with secrets)
+      - ${PICOCLAW_CONFIG:-./config/config.json}:/root/.picoclaw/config.json:ro
       # Codex CLI auth directory
       - ~/.codex:/root/.codex:ro
       # Persistent workspace (sessions, memory, logs)
