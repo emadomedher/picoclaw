@@ -1,17 +1,34 @@
 # Deployment Guide
 
-This guide shows how to deploy PicoClaw with real credentials while keeping the repo clean and generic.
+This guide shows how to deploy PicoClaw with your own configuration.
 
-## Simple Deployment Pattern
+## Configuration Options
 
-**Repository (committed to git):**
-- `config/config.example.json` → Generic placeholder config for reference
-- `docker-compose.yml` → Mounts `~/.picoclaw/config.json` (outside repo)
+PicoClaw uses the `PICOCLAW_CONFIG` environment variable to locate your config file. If not set, it defaults to `./config/config.example.json` (generic placeholders).
 
-**Your Deployment (NOT in git):**
-- `~/.picoclaw/config.json` → Your real config with credentials
+### Option 1: Environment Variable (Recommended)
 
-The docker-compose.yml **always mounts from outside the repo**. Just create your config at `~/.picoclaw/config.json` and you're good to go.
+```bash
+# Set config path
+export PICOCLAW_CONFIG=~/.picoclaw/config.json
+
+# Deploy
+docker compose --profile gateway up -d
+```
+
+### Option 2: Inline Environment Variable
+
+```bash
+# One-liner (no need to export)
+PICOCLAW_CONFIG=~/.picoclaw/config.json docker compose --profile gateway up -d
+```
+
+### Option 3: Default Config (Testing Only)
+
+```bash
+# Uses ./config/config.example.json (placeholders, won't actually work)
+docker compose --profile gateway up -d
+```
 
 ## Quick Start
 
@@ -22,17 +39,22 @@ The docker-compose.yml **always mounts from outside the repo**. Just create your
 mkdir -p ~/.picoclaw
 
 # Copy example and edit with your credentials
-cat > ~/.picoclaw/config.json <<'EOF'
+cp ~/code/picoclaw/config/config.example.json ~/.picoclaw/config.json
+
+# Edit with your real credentials
+nano ~/.picoclaw/config.json
+```
+
+Example config with Matrix:
+
+```json
 {
   "agents": {
     "defaults": {
       "workspace": "/root/.picoclaw/workspace",
-      "restrict_to_workspace": true,
       "provider": "codex-cli",
       "model": "gpt-5.2",
-      "max_tokens": 8192,
-      "temperature": 0.7,
-      "max_tool_iterations": 20
+      "max_tokens": 8192
     }
   },
   "channels": {
@@ -41,30 +63,10 @@ cat > ~/.picoclaw/config.json <<'EOF'
       "homeserver": "https://matrix.medher.online",
       "user_id": "@wanda:matrix.medher.online",
       "access_token": "syt_YOUR_REAL_TOKEN_HERE",
-      "device_id": "",
-      "allow_from": [],
       "join_on_invite": true
-    }
-  },
-  "providers": {
-    "openai": {
-      "api_key": "sk-YOUR_KEY_HERE",
-      "api_base": ""
-    }
-  },
-  "tools": {
-    "web": {
-      "duckduckgo": {
-        "enabled": true,
-        "max_results": 5
-      }
     }
   }
 }
-EOF
-
-# Protect your config
-chmod 600 ~/.picoclaw/config.json
 ```
 
 ### 2. Deploy
@@ -75,64 +77,93 @@ cd ~/code/picoclaw
 # Build the image
 docker compose build
 
-# Start the gateway
-docker compose --profile gateway up -d
+# Deploy with your config
+PICOCLAW_CONFIG=~/.picoclaw/config.json docker compose --profile gateway up -d
 
 # Check logs
 docker compose logs -f picoclaw-gateway
 ```
 
-That's it! The compose file automatically mounts `~/.picoclaw/config.json`.
-
 ## Multiple Bot Deployments
 
-To run multiple bots (e.g., Wanda, Aria) with different configs:
-
-### Option 1: Multiple Config Files + Container Names
+Deploy multiple bots with different configs using environment variables:
 
 ```bash
-# Wanda's config
-~/.picoclaw/wanda-config.json
+# Wanda
+PICOCLAW_CONFIG=~/.picoclaw/wanda-config.json \
+  docker compose -p wanda --profile gateway up -d
 
-# Aria's config
-~/.picoclaw/aria-config.json
+# Aria
+PICOCLAW_CONFIG=~/.picoclaw/aria-config.json \
+  docker compose -p aria --profile gateway up -d
+
+# Check both
+docker ps | grep picoclaw
 ```
 
-Create separate compose files:
-
-```yaml
-# docker-compose.wanda.yml
-services:
-  wanda:
-    extends:
-      file: docker-compose.yml
-      service: picoclaw-gateway
-    container_name: picoclaw-wanda
-    volumes:
-      - ~/.picoclaw/wanda-config.json:/root/.picoclaw/config.json:ro
-      - ~/.codex:/root/.codex:ro
-      - picoclaw-wanda-workspace:/root/.picoclaw/workspace
-
-volumes:
-  picoclaw-wanda-workspace:
-```
-
-Deploy each bot:
+Or create a wrapper script:
 
 ```bash
-docker compose -f docker-compose.wanda.yml up -d
-docker compose -f docker-compose.aria.yml up -d
+#!/bin/bash
+# deploy-bot.sh
+
+BOT_NAME=$1
+CONFIG_PATH=~/.picoclaw/${BOT_NAME}-config.json
+
+if [ ! -f "$CONFIG_PATH" ]; then
+  echo "Config not found: $CONFIG_PATH"
+  exit 1
+fi
+
+PICOCLAW_CONFIG=$CONFIG_PATH \
+  docker compose -p "picoclaw-$BOT_NAME" --profile gateway up -d
+
+echo "✓ Deployed $BOT_NAME"
 ```
 
-### Option 2: Environment Variable Override
+Usage:
+```bash
+./deploy-bot.sh wanda
+./deploy-bot.sh aria
+```
 
-If you need to switch configs temporarily:
+## Using .env File
+
+Create a `.env` file in the repo root (gitignored):
 
 ```bash
-# Override the mount path
-docker compose run --rm \
-  -v ~/.picoclaw/aria-config.json:/root/.picoclaw/config.json:ro \
-  picoclaw-agent -m "Hello"
+# .env
+PICOCLAW_CONFIG=/home/emad/.picoclaw/wanda-config.json
+```
+
+Then just run:
+```bash
+docker compose --profile gateway up -d
+```
+
+Docker Compose automatically loads `.env` files.
+
+## Verification
+
+### Check which config is being used
+
+```bash
+# Show resolved docker-compose config
+docker compose config | grep -A 2 "PICOCLAW_CONFIG"
+```
+
+### Verify config inside container
+
+```bash
+# Check what config the container sees
+docker compose --profile gateway run --rm picoclaw-gateway cat /root/.picoclaw/config.json | head -20
+```
+
+### Test config without deploying
+
+```bash
+# Dry run to see if config mounts correctly
+docker compose --profile gateway config
 ```
 
 ## Security Best Practices
@@ -140,30 +171,26 @@ docker compose run --rm \
 ### Protect Your Config
 
 ```bash
-# Only you can read/write
+# Restrict permissions
 chmod 600 ~/.picoclaw/config.json
 
 # Verify it's not in the repo
 cd ~/code/picoclaw
-git status  # Should NOT show ~/.picoclaw/config.json
+git status  # Should NOT show your config
 ```
 
 ### Never Commit Secrets
 
-The `.gitignore` already blocks common config locations, but **never** add configs with secrets to the repo:
+- ✅ Use `~/.picoclaw/` for configs (outside repo)
+- ✅ Use `.env` file (gitignored)
+- ✅ Keep example configs generic
+- ❌ Never commit real tokens/API keys
 
-```bash
-# ❌ WRONG - DO NOT DO THIS
-git add ~/.picoclaw/config.json
+### Container Hardening
 
-# ✅ RIGHT - Config stays outside repo
-ls ~/.picoclaw/config.json  # Exists outside git
-```
-
-### Container Security Hardening
+Add to `docker-compose.override.yml` (optional):
 
 ```yaml
-# docker-compose.override.yml (optional hardening)
 services:
   picoclaw-gateway:
     read_only: true
@@ -177,23 +204,21 @@ services:
 
 ## Kubernetes Deployment
 
-For K8s, use Secrets and ConfigMaps:
+For K8s, use ConfigMaps and Secrets:
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: wanda-matrix-token
-  namespace: agents
 type: Opaque
 stringData:
-  access_token: syt_d2FuZGE_vjlXtHrcGFLicqafLMdF_1Mfb0K
+  access_token: syt_YOUR_TOKEN_HERE
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: wanda-config
-  namespace: agents
 data:
   config.json: |
     {
@@ -201,8 +226,7 @@ data:
         "matrix": {
           "enabled": true,
           "homeserver": "https://matrix.medher.online",
-          "user_id": "@wanda:matrix.medher.online",
-          "join_on_invite": true
+          "user_id": "@wanda:matrix.medher.online"
         }
       }
     }
@@ -211,16 +235,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: picoclaw-wanda
-  namespace: agents
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: picoclaw-wanda
   template:
-    metadata:
-      labels:
-        app: picoclaw-wanda
     spec:
       containers:
       - name: picoclaw
@@ -230,9 +250,6 @@ spec:
         - name: config
           mountPath: /root/.picoclaw/config.json
           subPath: config.json
-          readOnly: true
-        - name: workspace
-          mountPath: /root/.picoclaw/workspace
         env:
         - name: MATRIX_ACCESS_TOKEN
           valueFrom:
@@ -243,24 +260,21 @@ spec:
       - name: config
         configMap:
           name: wanda-config
-      - name: workspace
-        persistentVolumeClaim:
-          claimName: picoclaw-wanda-workspace
 ```
-
-Then inject the secret at runtime or use init containers to merge config + secret.
 
 ## Troubleshooting
 
 ### Config file not found
 
 ```bash
-# Check if config exists
-ls -la ~/.picoclaw/config.json
+# Check if env var is set
+echo $PICOCLAW_CONFIG
+
+# Check if file exists
+ls -la $PICOCLAW_CONFIG
 
 # If missing, copy from example
-cp ~/code/picoclaw/config/config.example.json ~/.picoclaw/config.json
-# Then edit with your credentials
+cp config/config.example.json ~/.picoclaw/config.json
 ```
 
 ### Permission denied
@@ -268,29 +282,34 @@ cp ~/code/picoclaw/config/config.example.json ~/.picoclaw/config.json
 ```bash
 # Docker needs read access
 chmod 644 ~/.picoclaw/config.json
-
-# Or more restrictive (owner only)
-chmod 600 ~/.picoclaw/config.json
 ```
 
-### Verify config is mounted
+### Wrong config being used
 
 ```bash
-# Check what config Docker sees
-docker compose --profile gateway run --rm picoclaw-gateway cat /root/.picoclaw/config.json
+# Verify environment variable
+docker compose config | grep PICOCLAW_CONFIG
+
+# Force specific config
+unset PICOCLAW_CONFIG
+PICOCLAW_CONFIG=~/.picoclaw/config.json docker compose --profile gateway up -d
 ```
 
-### Secrets visible in logs
+### Config changes not applied
 
 ```bash
-# Never log full config!
-# If you see secrets in logs, file a bug report
-docker compose logs picoclaw-gateway | grep -i "token\|password\|secret"
+# Restart container to reload config
+docker compose restart picoclaw-gateway
+
+# Or recreate
+docker compose --profile gateway down
+PICOCLAW_CONFIG=~/.picoclaw/config.json docker compose --profile gateway up -d
 ```
 
 ---
 
-**Remember:** 
+**Summary:**
 - Repo = generic code + example config
-- Deployment = your config at `~/.picoclaw/config.json`
-- docker-compose.yml automatically mounts it
+- Your config = anywhere you want (recommended: `~/.picoclaw/`)
+- Use `PICOCLAW_CONFIG` env var to point to your config
+- Default = `./config/config.example.json` (placeholders only)

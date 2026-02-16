@@ -11,8 +11,8 @@ services:
     profiles:
       - agent
     volumes:
-      # Mount your config from outside the repo
-      - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
+      # Config: Set PICOCLAW_CONFIG env var, or defaults to repo example
+      - ${PICOCLAW_CONFIG:-./config/config.example.json}:/root/.picoclaw/config.json:ro
       # Codex CLI auth directory
       - ~/.codex:/root/.codex:ro
       # Persistent workspace (sessions, memory, logs)
@@ -34,8 +34,8 @@ services:
     profiles:
       - gateway
     volumes:
-      # Mount your config from outside the repo
-      - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
+      # Config: Set PICOCLAW_CONFIG env var, or defaults to repo example
+      - ${PICOCLAW_CONFIG:-./config/config.example.json}:/root/.picoclaw/config.json:ro
       # Codex CLI auth directory
       - ~/.codex:/root/.codex:ro
       # Persistent workspace (sessions, memory, logs)

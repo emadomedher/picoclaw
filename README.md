@@ -144,12 +144,13 @@ You can also run PicoClaw using Docker Compose without installing anything local
 git clone https://github.com/sipeed/picoclaw.git
 cd picoclaw
 
-# 2. Set your API keys
-cp config/config.example.json config/config.json
-vim config/config.json      # Set DISCORD_BOT_TOKEN, API keys, etc.
+# 2. Create your config (outside the repo)
+mkdir -p ~/.picoclaw
+cp config/config.example.json ~/.picoclaw/config.json
+vim ~/.picoclaw/config.json      # Set DISCORD_BOT_TOKEN, API keys, etc.
 
 # 3. Build & Start
-docker compose --profile gateway up -d
+PICOCLAW_CONFIG=~/.picoclaw/config.json docker compose --profile gateway up -d
 
 # 4. Check logs
 docker compose logs -f picoclaw-gateway
@@ -157,6 +158,10 @@ docker compose logs -f picoclaw-gateway
 # 5. Stop
 docker compose --profile gateway down
 ```
+
+> **💡 Tip:** Set `export PICOCLAW_CONFIG=~/.picoclaw/config.json` in your shell to avoid typing it each time.
+>
+> See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for advanced deployment patterns (multiple bots, K8s, etc.)
 
 ### Agent Mode (One-shot)
 
