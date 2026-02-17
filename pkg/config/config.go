@@ -217,12 +217,14 @@ type WhisperConfig struct {
 }
 
 type TTSConfig struct {
-	Enabled bool    `json:"enabled" env:"PICOCLAW_TOOLS_TTS_ENABLED"`
-	APIBase string  `json:"api_base" env:"PICOCLAW_TOOLS_TTS_API_BASE"`
-	Voice   string  `json:"voice" env:"PICOCLAW_TOOLS_TTS_VOICE"`
-	Model   string  `json:"model" env:"PICOCLAW_TOOLS_TTS_MODEL"`
-	Format  string  `json:"format" env:"PICOCLAW_TOOLS_TTS_FORMAT"`
-	Speed   float64 `json:"speed" env:"PICOCLAW_TOOLS_TTS_SPEED"`
+	Enabled      bool    `json:"enabled" env:"PICOCLAW_TOOLS_TTS_ENABLED"`
+	APIBase      string  `json:"api_base" env:"PICOCLAW_TOOLS_TTS_API_BASE"`
+	Voice        string  `json:"voice" env:"PICOCLAW_TOOLS_TTS_VOICE"`
+	Model        string  `json:"model" env:"PICOCLAW_TOOLS_TTS_MODEL"`
+	Format       string  `json:"format" env:"PICOCLAW_TOOLS_TTS_FORMAT"`
+	Speed        float64 `json:"speed" env:"PICOCLAW_TOOLS_TTS_SPEED"`
+	Exaggeration float64 `json:"exaggeration" env:"PICOCLAW_TOOLS_TTS_EXAGGERATION"` // Chatterbox: emotion expressiveness 0.0–1.0
+	CFGWeight    float64 `json:"cfg_weight" env:"PICOCLAW_TOOLS_TTS_CFG_WEIGHT"`     // Chatterbox: voice guidance weight 0.0–1.0
 }
 
 type ToolsConfig struct {
@@ -343,12 +345,14 @@ func DefaultConfig() *Config {
 				APIBase: "http://localhost:8200",
 			},
 			TTS: TTSConfig{
-				Enabled: false,
-				APIBase: "http://localhost:8100",
-				Voice:   "en_us-lessac-medium",
-				Model:   "tts-1",
-				Format:  "mp3",
-				Speed:   1.0,
+				Enabled:      false,
+				APIBase:      "http://localhost:8100",
+				Voice:        "en_us-lessac-medium",
+				Model:        "tts-1",
+				Format:       "mp3",
+				Speed:        1.0,
+				Exaggeration: 0.5,
+				CFGWeight:    0.5,
 			},
 		},
 		Heartbeat: HeartbeatConfig{
