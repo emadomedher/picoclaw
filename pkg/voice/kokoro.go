@@ -201,19 +201,25 @@ func (s *KokoroSynthesizer) Synthesize(ctx context.Context, text string) (string
 	return tmpFile.Name(), nil
 }
 
-// IsAvailable checks if the Kokoro TTS server is reachable.
+// IsAvailable checks if the TTS server is reachable.
+// Chatterbox uses /health; all others use /v1/models.
 func (s *KokoroSynthesizer) IsAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", s.apiBase+"/v1/models", nil)
+	endpoint := "/v1/models"
+	if s.isChatterbox() {
+		endpoint = "/health"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", s.apiBase+endpoint, nil)
 	if err != nil {
 		return false
 	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		logger.DebugCF("voice", "Kokoro TTS health check failed", map[string]interface{}{
+		logger.DebugCF("voice", "TTS health check failed", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return false
@@ -221,9 +227,10 @@ func (s *KokoroSynthesizer) IsAvailable() bool {
 	defer resp.Body.Close()
 
 	available := resp.StatusCode == http.StatusOK
-	logger.DebugCF("voice", "Kokoro TTS availability", map[string]interface{}{
+	logger.DebugCF("voice", "TTS availability", map[string]interface{}{
 		"available":   available,
 		"status_code": resp.StatusCode,
+		"endpoint":    endpoint,
 	})
 	return available
 }
