@@ -3,7 +3,11 @@ package channels
 import (
 	"context"
 	"fmt"
+	"mime"
+	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +29,7 @@ type MatrixChannel struct {
 	syncer       *mautrix.DefaultSyncer
 	stopSyncer   context.CancelFunc
 	roomNames    sync.Map // roomID -> room name
+	placeholders sync.Map // chatID (room ID string) -> placeholder event ID string
 	transcriber  voice.Transcriber
 }
 
@@ -50,6 +55,7 @@ func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*Matr
 		matrixConfig: matrixCfg,
 		syncer:       syncer,
 		roomNames:    sync.Map{},
+		placeholders: sync.Map{},
 		transcriber:  nil,
 	}, nil
 }
@@ -98,17 +104,17 @@ func (c *MatrixChannel) Stop(ctx context.Context) error {
 
 func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event) {
 	memberEvt := evt.Content.AsMember()
-	
+
 	// Auto-join rooms if invited and JoinOnInvite is enabled
-	if memberEvt.Membership == event.MembershipInvite && 
-	   evt.GetStateKey() == string(c.client.UserID) &&
-	   c.matrixConfig.JoinOnInvite {
-		
+	if memberEvt.Membership == event.MembershipInvite &&
+		evt.GetStateKey() == string(c.client.UserID) &&
+		c.matrixConfig.JoinOnInvite {
+
 		roomID := evt.RoomID
 		logger.InfoCF("matrix", "Auto-joining room after invite", map[string]interface{}{
 			"room_id": roomID.String(),
 		})
-		
+
 		_, err := c.client.JoinRoomByID(ctx, roomID)
 		if err != nil {
 			logger.ErrorCF("matrix", "Failed to join room", map[string]interface{}{
@@ -132,6 +138,11 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	msgEvt := evt.Content.AsMessage()
 	roomID := evt.RoomID.String()
 	senderID := evt.Sender.String()
+
+	// Ignore edit events (m.replace relations)
+	if msgEvt.RelatesTo != nil && msgEvt.RelatesTo.Type == event.RelReplace {
+		return
+	}
 
 	// Check if sender is allowed
 	if !c.IsAllowed(senderID) {
@@ -167,7 +178,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	switch msgEvt.MsgType {
 	case event.MsgText:
 		// Text already in messageText
-		
+
 	case event.MsgImage:
 		// Download and process image
 		if msgEvt.URL != "" {
@@ -181,7 +192,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 				messageText += fmt.Sprintf("[image: %s]", msgEvt.Body)
 			}
 		}
-		
+
 	case event.MsgAudio, event.MsgVideo:
 		// Download and transcribe audio/video
 		if msgEvt.URL != "" {
@@ -189,18 +200,18 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 			if msgEvt.MsgType == event.MsgVideo {
 				ext = ".mp4"
 			}
-			
+
 			mediaPath := c.downloadMedia(ctx, msgEvt.URL, msgEvt.Body, ext)
 			if mediaPath != "" {
 				localFiles = append(localFiles, mediaPath)
 				mediaPaths = append(mediaPaths, mediaPath)
-				
+
 				// Try transcription for audio/video
 				transcribedText := ""
 				if c.transcriber != nil && c.transcriber.IsAvailable() {
 					tCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
-					
+
 					result, err := c.transcriber.Transcribe(tCtx, mediaPath)
 					if err != nil {
 						logger.ErrorCF("matrix", "Transcription failed", map[string]interface{}{
@@ -218,14 +229,14 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 				} else {
 					transcribedText = fmt.Sprintf("[%s: %s]", msgEvt.MsgType, msgEvt.Body)
 				}
-				
+
 				if messageText != "" {
 					messageText += "\n"
 				}
 				messageText += transcribedText
 			}
 		}
-		
+
 	case event.MsgFile:
 		// Download generic file
 		if msgEvt.URL != "" {
@@ -239,7 +250,7 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 				messageText += fmt.Sprintf("[file: %s]", msgEvt.Body)
 			}
 		}
-		
+
 	default:
 		// Unsupported message type
 		logger.DebugCF("matrix", "Ignoring unsupported message type", map[string]interface{}{
@@ -249,21 +260,15 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	}
 
 	logger.InfoCF("matrix", "Received message", map[string]interface{}{
-		"sender":   senderName,
-		"room":     roomName,
-		"content":  messageText,
-		"type":     msgEvt.MsgType,
+		"sender":  senderName,
+		"room":    roomName,
+		"content": messageText,
+		"type":    msgEvt.MsgType,
 	})
 
 	// Check if it's a group chat
 	memberCount := c.getRoomMemberCount(ctx, evt.RoomID)
 	isGroup := memberCount > 2
-
-	logger.InfoCF("matrix", "Message context", map[string]interface{}{
-		"room":          roomName,
-		"member_count":  memberCount,
-		"is_group_chat": isGroup,
-	})
 
 	// In group chats, check mention requirement
 	if isGroup && c.matrixConfig.RequireMentionInGroup {
@@ -283,11 +288,28 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		messageText = c.removeMention(messageText, c.client.UserID)
 	}
 
+	// Send thinking indicator and store placeholder event ID
+	thinkResp, err := c.client.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, &event.MessageEventContent{
+		MsgType: event.MsgNotice,
+		Body:    "⏳",
+	})
+	if err == nil {
+		c.placeholders.Store(roomID, thinkResp.EventID.String())
+		logger.DebugCF("matrix", "Sent thinking indicator", map[string]interface{}{
+			"event_id": thinkResp.EventID.String(),
+			"room_id":  roomID,
+		})
+	} else {
+		logger.WarnCF("matrix", "Failed to send thinking indicator", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
 	// Prepare metadata
 	metadata := map[string]string{
-		"sender_name":  senderName,
-		"room_name":    roomName,
-		"timestamp":    fmt.Sprintf("%d", evt.Timestamp),
+		"sender_name": senderName,
+		"room_name":   roomName,
+		"timestamp":   fmt.Sprintf("%d", evt.Timestamp),
 	}
 
 	if isGroup {
@@ -303,6 +325,180 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	// Handle the message through base channel
 	c.HandleMessage(senderID, roomID, messageText, mediaPaths, metadata)
 }
+
+// ─── Send (outbound) ──────────────────────────────────────────────────────────
+
+func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	roomID := id.RoomID(msg.ChatID)
+
+	// 1. Send any media files first (each as its own Matrix event)
+	for _, mediaPath := range msg.Media {
+		if err := c.sendMediaFile(ctx, roomID, mediaPath); err != nil {
+			logger.ErrorCF("matrix", "Failed to send media file", map[string]interface{}{
+				"error": err.Error(),
+				"path":  mediaPath,
+			})
+			// Continue with other files even if one fails
+		}
+	}
+
+	// 2. Handle text content
+	if msg.Content != "" {
+		content := &event.MessageEventContent{
+			MsgType: event.MsgText,
+			Body:    msg.Content,
+		}
+
+		// Apply Markdown → HTML conversion if content looks like Markdown
+		if hasMarkdown(msg.Content) {
+			content.Format = event.FormatHTML
+			content.FormattedBody = markdownToMatrixHTML(msg.Content)
+		}
+
+		// If we have a thinking placeholder, edit it in-place
+		if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
+			content.SetEdit(id.EventID(placeholderID.(string)))
+			_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+			if err != nil {
+				return fmt.Errorf("failed to edit matrix placeholder: %w", err)
+			}
+			logger.InfoCF("matrix", "Edited placeholder with response", map[string]interface{}{
+				"chat_id": msg.ChatID,
+			})
+			return nil
+		}
+
+		// No placeholder — send as a fresh message
+		_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+		if err != nil {
+			return fmt.Errorf("failed to send matrix message: %w", err)
+		}
+		logger.InfoCF("matrix", "Sent message to room", map[string]interface{}{
+			"chat_id": msg.ChatID,
+		})
+		return nil
+	}
+
+	// 3. Text is empty but media was sent — redact the thinking placeholder
+	if len(msg.Media) > 0 {
+		if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
+			_, err := c.client.RedactEvent(ctx, roomID, id.EventID(placeholderID.(string)),
+				mautrix.ReqRedact{Reason: "Media response sent"})
+			if err != nil {
+				logger.WarnCF("matrix", "Failed to redact thinking placeholder", map[string]interface{}{
+					"error": err.Error(),
+				})
+			}
+		}
+	}
+
+	return nil
+}
+
+// ─── Media upload helpers ─────────────────────────────────────────────────────
+
+// sendMediaFile uploads a local file to the Matrix content repository and sends
+// it as an appropriate Matrix event (m.image, m.audio, m.video, or m.file).
+func (c *MatrixChannel) sendMediaFile(ctx context.Context, roomID id.RoomID, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read media file %q: %w", filePath, err)
+	}
+
+	mimeType := detectMIMEType(filePath, data)
+	fileName := filepath.Base(filePath)
+
+	logger.InfoCF("matrix", "Uploading media to content repo", map[string]interface{}{
+		"path":      filePath,
+		"mime_type": mimeType,
+		"size":      len(data),
+	})
+
+	resp, err := c.client.UploadMedia(ctx, mautrix.ReqUploadMedia{
+		ContentBytes: data,
+		ContentType:  mimeType,
+		FileName:     fileName,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload media to Matrix: %w", err)
+	}
+
+	mxcURI := resp.ContentURI.CUString()
+
+	// Determine event type based on MIME category
+	msgType := mimeToMsgType(mimeType)
+
+	content := &event.MessageEventContent{
+		MsgType: msgType,
+		Body:    fileName,
+		URL:     mxcURI,
+		Info: &event.FileInfo{
+			MimeType: mimeType,
+			Size:     len(data),
+		},
+	}
+
+	_, err = c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
+	if err != nil {
+		return fmt.Errorf("failed to send media event: %w", err)
+	}
+
+	logger.InfoCF("matrix", "Media sent successfully", map[string]interface{}{
+		"room_id":   roomID.String(),
+		"msg_type":  msgType,
+		"mime_type": mimeType,
+		"mxc_uri":   string(mxcURI),
+	})
+
+	return nil
+}
+
+// detectMIMEType guesses the MIME type using the file extension first,
+// then falls back to sniffing the first 512 bytes.
+func detectMIMEType(filePath string, data []byte) string {
+	// Try extension first (most reliable for known formats)
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext != "" {
+		if mimeType := mime.TypeByExtension(ext); mimeType != "" {
+			// Strip parameters (e.g. "text/plain; charset=utf-8" → "text/plain")
+			if idx := strings.Index(mimeType, ";"); idx > 0 {
+				mimeType = strings.TrimSpace(mimeType[:idx])
+			}
+			return mimeType
+		}
+	}
+
+	// Fallback: sniff content
+	if len(data) > 0 {
+		sniff := data
+		if len(sniff) > 512 {
+			sniff = sniff[:512]
+		}
+		return http.DetectContentType(sniff)
+	}
+
+	return "application/octet-stream"
+}
+
+// mimeToMsgType maps a MIME type to the appropriate Matrix message type.
+func mimeToMsgType(mimeType string) event.MessageType {
+	base := mimeType
+	if idx := strings.Index(mimeType, "/"); idx > 0 {
+		base = mimeType[:idx]
+	}
+	switch base {
+	case "image":
+		return event.MsgImage
+	case "audio":
+		return event.MsgAudio
+	case "video":
+		return event.MsgVideo
+	default:
+		return event.MsgFile
+	}
+}
+
+// ─── Room/user helpers ────────────────────────────────────────────────────────
 
 func (c *MatrixChannel) getRoomName(ctx context.Context, roomID id.RoomID) string {
 	// Check cache first
@@ -333,16 +529,11 @@ func (c *MatrixChannel) getUserDisplayName(ctx context.Context, roomID id.RoomID
 }
 
 func (c *MatrixChannel) getRoomMemberCount(ctx context.Context, roomID id.RoomID) int {
-	// Get joined members count
 	resp, err := c.client.JoinedMembers(ctx, roomID)
 	if err != nil {
 		return 0
 	}
 	return len(resp.Joined)
-}
-
-func (c *MatrixChannel) isGroupChat(ctx context.Context, roomID id.RoomID) bool {
-	return c.getRoomMemberCount(ctx, roomID) > 2
 }
 
 func (c *MatrixChannel) getReplyToID(msgEvt *event.MessageEventContent) string {
@@ -353,22 +544,20 @@ func (c *MatrixChannel) getReplyToID(msgEvt *event.MessageEventContent) string {
 }
 
 func (c *MatrixChannel) isBotMentioned(msgEvt *event.MessageEventContent, botUserID id.UserID) bool {
-	// Check plain text body for mention
+	// Full Matrix ID mention (e.g. @bot:homeserver)
 	if strings.Contains(msgEvt.Body, botUserID.String()) {
 		return true
 	}
 
-	// Check formatted body (HTML) for mention
+	// Formatted (HTML) body mention
 	if msgEvt.Format == event.FormatHTML && strings.Contains(msgEvt.FormattedBody, botUserID.String()) {
 		return true
 	}
 
-	// Check for displayname mention (e.g., "wanda" or "Wanda")
-	// This is less reliable but common in Matrix clients
-	displayName := strings.TrimPrefix(botUserID.String(), "@")
-	displayName = strings.Split(displayName, ":")[0] // Get localpart only
-	lowerBody := strings.ToLower(msgEvt.Body)
-	if strings.Contains(lowerBody, strings.ToLower(displayName)) {
+	// Localpart mention (e.g. "wanda")
+	localpart := strings.TrimPrefix(botUserID.String(), "@")
+	localpart = strings.Split(localpart, ":")[0]
+	if strings.Contains(strings.ToLower(msgEvt.Body), strings.ToLower(localpart)) {
 		return true
 	}
 
@@ -376,61 +565,28 @@ func (c *MatrixChannel) isBotMentioned(msgEvt *event.MessageEventContent, botUse
 }
 
 func (c *MatrixChannel) removeMention(text string, botUserID id.UserID) string {
-	// Remove @user:homeserver mentions
+	// Remove full ID (@user:homeserver)
 	text = strings.ReplaceAll(text, botUserID.String(), "")
-	
-	// Remove localpart mentions (e.g., "wanda")
-	displayName := strings.TrimPrefix(botUserID.String(), "@")
-	displayName = strings.Split(displayName, ":")[0]
-	
-	// Remove with @ prefix
-	text = strings.ReplaceAll(text, "@"+displayName, "")
-	
-	// Remove standalone displayname at start/end
-	text = strings.TrimPrefix(text, displayName)
-	text = strings.TrimSuffix(text, displayName)
-	
-	// Clean up extra whitespace
-	text = strings.TrimSpace(text)
-	
-	return text
+
+	// Remove localpart with @ prefix
+	localpart := strings.TrimPrefix(botUserID.String(), "@")
+	localpart = strings.Split(localpart, ":")[0]
+	text = strings.ReplaceAll(text, "@"+localpart, "")
+
+	// Remove bare localpart at start/end of message
+	text = strings.TrimPrefix(text, localpart)
+	text = strings.TrimSuffix(text, localpart)
+
+	return strings.TrimSpace(text)
 }
 
-func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	roomID := id.RoomID(msg.ChatID)
+// ─── Inbound media download ───────────────────────────────────────────────────
 
-	// Prepare message content
-	content := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    msg.Content,
-	}
-
-	// Handle Markdown formatting
-	if strings.Contains(msg.Content, "**") || strings.Contains(msg.Content, "_") || 
-	   strings.Contains(msg.Content, "`") || strings.Contains(msg.Content, "#") {
-		content.Format = event.FormatHTML
-		content.FormattedBody = c.markdownToHTML(msg.Content)
-	}
-
-	// Send the message
-	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
-	if err != nil {
-		return fmt.Errorf("failed to send matrix message: %w", err)
-	}
-
-	logger.InfoCF("matrix", "Sent message to room", map[string]interface{}{
-		"chat_id": msg.ChatID,
-	})
-	return nil
-}
-
-// Simple markdown to HTML converter for Matrix
 func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIString, filename, ext string) string {
 	if mxcURL == "" {
 		return ""
 	}
 
-	// Parse mxc:// URL
 	contentURI := mxcURL.ParseOrIgnore()
 	if contentURI.IsEmpty() {
 		logger.ErrorCF("matrix", "Invalid media URL", map[string]interface{}{
@@ -444,7 +600,6 @@ func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIS
 		"filename": filename,
 	})
 
-	// Download the file
 	data, err := c.client.DownloadBytes(ctx, contentURI)
 	if err != nil {
 		logger.ErrorCF("matrix", "Failed to download media", map[string]interface{}{
@@ -456,7 +611,6 @@ func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIS
 
 	// Determine file extension
 	if ext == "" {
-		// Try to detect extension from filename
 		if strings.Contains(filename, ".") {
 			parts := strings.Split(filename, ".")
 			ext = "." + parts[len(parts)-1]
@@ -465,7 +619,7 @@ func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIS
 		}
 	}
 
-	// Create temp file
+	// Write to temp file
 	tempFile, err := os.CreateTemp("", "matrix-media-*"+ext)
 	if err != nil {
 		logger.ErrorCF("matrix", "Failed to create temp file", map[string]interface{}{
@@ -475,7 +629,6 @@ func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIS
 	}
 	defer tempFile.Close()
 
-	// Write data to file
 	if _, err := tempFile.Write(data); err != nil {
 		logger.ErrorCF("matrix", "Failed to write media file", map[string]interface{}{
 			"error": err.Error(),
@@ -492,22 +645,120 @@ func (c *MatrixChannel) downloadMedia(ctx context.Context, mxcURL id.ContentURIS
 	return tempFile.Name()
 }
 
+// ─── Markdown → Matrix HTML ───────────────────────────────────────────────────
 
-func (c *MatrixChannel) markdownToHTML(text string) string {
-	html := text
-	
-	// Bold: **text** -> <strong>text</strong>
-	html = strings.ReplaceAll(html, "**", "<strong>")
-	// Count replacements and close tags
-	count := strings.Count(text, "**")
-	for i := 0; i < count/2; i++ {
-		html = strings.Replace(html, "<strong>", "<strong>", 1)
-		html = strings.Replace(html, "<strong>", "</strong>", 1)
+// hasMarkdown returns true if the text contains common Markdown syntax.
+func hasMarkdown(text string) bool {
+	return strings.ContainsAny(text, "*_`#[~")
+}
+
+// markdownToMatrixHTML converts a subset of Markdown to Matrix-compatible HTML.
+// Matrix supports: <strong>, <em>, <code>, <pre>, <del>, <h1>-<h6>, <a>, <ul>, <li>, <blockquote>
+func markdownToMatrixHTML(text string) string {
+	if text == "" {
+		return ""
 	}
-	
-	// Italic: _text_ -> <em>text</em>
-	// Code: `text` -> <code>text</code>
-	// Simple replacements for now
-	
-	return html
+
+	// 1. Extract and protect code blocks (```...```) before other processing
+	type codeBlock struct{ lang, code string }
+	var codeBlocks []codeBlock
+	reCodeBlock := regexp.MustCompile("(?s)```([a-zA-Z0-9]*)\n?(.*?)```")
+	text = reCodeBlock.ReplaceAllStringFunc(text, func(m string) string {
+		match := reCodeBlock.FindStringSubmatch(m)
+		lang, code := "", ""
+		if len(match) >= 3 {
+			lang = match[1]
+			code = match[2]
+		}
+		placeholder := fmt.Sprintf("\x00CB%d\x00", len(codeBlocks))
+		codeBlocks = append(codeBlocks, codeBlock{lang, code})
+		return placeholder
+	})
+
+	// 2. Extract and protect inline code (`...`)
+	var inlineCodes []string
+	reInlineCode := regexp.MustCompile("`([^`]+)`")
+	text = reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		match := reInlineCode.FindStringSubmatch(m)
+		code := ""
+		if len(match) >= 2 {
+			code = match[1]
+		}
+		placeholder := fmt.Sprintf("\x00IC%d\x00", len(inlineCodes))
+		inlineCodes = append(inlineCodes, code)
+		return placeholder
+	})
+
+	// 3. Escape HTML special characters in non-code content
+	text = matrixEscapeHTML(text)
+
+	// 4. Bold: **text** or __text__
+	reBold := regexp.MustCompile(`\*\*(.+?)\*\*`)
+	text = reBold.ReplaceAllString(text, "<strong>$1</strong>")
+	reBold2 := regexp.MustCompile(`__(.+?)__`)
+	text = reBold2.ReplaceAllString(text, "<strong>$1</strong>")
+
+	// 5. Italic: *text* or _text_ (single, not double)
+	reItalic := regexp.MustCompile(`\*([^*\n]+)\*`)
+	text = reItalic.ReplaceAllString(text, "<em>$1</em>")
+	reItalic2 := regexp.MustCompile(`_([^_\n]+)_`)
+	text = reItalic2.ReplaceAllString(text, "<em>$1</em>")
+
+	// 6. Strikethrough: ~~text~~
+	reStrike := regexp.MustCompile(`~~(.+?)~~`)
+	text = reStrike.ReplaceAllString(text, "<del>$1</del>")
+
+	// 7. Links: [label](url)
+	reLink := regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	text = reLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
+
+	// 8. Headings: # H1, ## H2, etc. (line by line)
+	reHeading := regexp.MustCompile(`(?m)^(#{1,6})\s+(.+)$`)
+	text = reHeading.ReplaceAllStringFunc(text, func(m string) string {
+		match := reHeading.FindStringSubmatch(m)
+		if len(match) < 3 {
+			return m
+		}
+		level := len(match[1])
+		return fmt.Sprintf("<h%d>%s</h%d>", level, match[2], level)
+	})
+
+	// 9. Blockquotes: > text
+	reQuote := regexp.MustCompile(`(?m)^>\s?(.*)$`)
+	text = reQuote.ReplaceAllString(text, "<blockquote>$1</blockquote>")
+
+	// 10. Unordered list items: - item or * item
+	reList := regexp.MustCompile(`(?m)^[-*]\s+(.+)$`)
+	text = reList.ReplaceAllString(text, "<li>$1</li>")
+
+	// 11. Newlines → <br> (preserve formatting)
+	text = strings.ReplaceAll(text, "\n", "<br>\n")
+
+	// 12. Restore inline code
+	for i, code := range inlineCodes {
+		escaped := matrixEscapeHTML(code)
+		text = strings.ReplaceAll(text, fmt.Sprintf("\x00IC%d\x00", i), fmt.Sprintf("<code>%s</code>", escaped))
+	}
+
+	// 13. Restore code blocks
+	for i, cb := range codeBlocks {
+		escaped := matrixEscapeHTML(cb.code)
+		if cb.lang != "" {
+			text = strings.ReplaceAll(text, fmt.Sprintf("\x00CB%d\x00", i),
+				fmt.Sprintf("<pre><code class=\"language-%s\">%s</code></pre>", cb.lang, escaped))
+		} else {
+			text = strings.ReplaceAll(text, fmt.Sprintf("\x00CB%d\x00", i),
+				fmt.Sprintf("<pre><code>%s</code></pre>", escaped))
+		}
+	}
+
+	return text
+}
+
+// matrixEscapeHTML escapes the three HTML special characters.
+func matrixEscapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
