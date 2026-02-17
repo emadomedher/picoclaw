@@ -642,27 +642,24 @@ func gatewayCmd() {
 		}
 	}
 
-	// Create TTS synthesizer (Kokoro) and register voice_reply tool
+	// Attach TTS callbacks to the message tool (voice=true support)
 	if cfg.Tools.TTS.Enabled {
 		synthesizer := voice.NewKokoroSynthesizer(cfg.Tools.TTS.APIBase, cfg.Tools.TTS.Voice)
 		if synthesizer.IsAvailable() {
-			logger.InfoCF("voice", "Kokoro TTS synthesizer enabled", map[string]interface{}{
+			logger.InfoCF("voice", "Kokoro TTS enabled — voice=true supported in message tool", map[string]interface{}{
 				"api_base": cfg.Tools.TTS.APIBase,
 				"voice":    cfg.Tools.TTS.Voice,
 			})
-			voiceTool := tools.NewVoiceReplyTool()
-			voiceTool.SetSendCallback(func(ctx context.Context, channel, chatID, text string) error {
-				audioPath, err := synthesizer.Synthesize(ctx, text)
-				if err != nil {
-					return fmt.Errorf("TTS synthesis failed: %w", err)
-				}
-				defer os.Remove(audioPath)
-				return channelManager.SendFileToChannel(ctx, channel, chatID, []string{audioPath})
-			})
-			agentLoop.RegisterTool(voiceTool)
-			logger.InfoC("voice", "voice_reply tool registered")
+			agentLoop.SetVoiceCallbacks(
+				func(ctx context.Context, text string) (string, error) {
+					return synthesizer.Synthesize(ctx, text)
+				},
+				func(ctx context.Context, channel, chatID string, filePaths []string) error {
+					return channelManager.SendFileToChannel(ctx, channel, chatID, filePaths)
+				},
+			)
 		} else {
-			logger.WarnC("voice", "Kokoro TTS configured but not available — voice_reply tool disabled")
+			logger.WarnC("voice", "Kokoro TTS configured but not available — voice=true disabled")
 		}
 	}
 
