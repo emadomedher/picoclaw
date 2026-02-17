@@ -79,6 +79,18 @@ type ChannelsConfig struct {
 	Slack    SlackConfig    `json:"slack"`
 	LINE     LINEConfig     `json:"line"`
 	OneBot   OneBotConfig   `json:"onebot"`
+	Matrix   MatrixConfig   `json:"matrix"`
+}
+
+type MatrixConfig struct {
+	Enabled               bool                `json:"enabled" env:"PICOCLAW_CHANNELS_MATRIX_ENABLED"`
+	Homeserver            string              `json:"homeserver" env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
+	UserID                string              `json:"user_id" env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`
+	AccessToken           string              `json:"access_token" env:"PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN"`
+	DeviceID              string              `json:"device_id" env:"PICOCLAW_CHANNELS_MATRIX_DEVICE_ID"`
+	AllowFrom             FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
+	JoinOnInvite          bool                `json:"join_on_invite" env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
+	RequireMentionInGroup bool                `json:"require_mention_in_group" env:"PICOCLAW_CHANNELS_MATRIX_REQUIRE_MENTION_IN_GROUP"`
 }
 
 type WhatsAppConfig struct {
@@ -310,6 +322,16 @@ func DefaultConfig() *Config {
 				ReconnectInterval:  5,
 				GroupTriggerPrefix: []string{},
 				AllowFrom:          FlexibleStringSlice{},
+			},
+			Matrix: MatrixConfig{
+				Enabled:               false,
+				Homeserver:            "https://matrix.org",
+				UserID:                "",
+				AccessToken:           "",
+				DeviceID:              "",
+				AllowFrom:             FlexibleStringSlice{},
+				JoinOnInvite:          true,
+				RequireMentionInGroup: true,
 			},
 		},
 		Providers: ProvidersConfig{

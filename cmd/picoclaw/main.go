@@ -632,6 +632,12 @@ func gatewayCmd() {
 				logger.InfoC("voice", "Transcription attached to Slack channel")
 			}
 		}
+		if matrixChannel, ok := channelManager.GetChannel("matrix"); ok {
+			if mc, ok := matrixChannel.(*channels.MatrixChannel); ok {
+				mc.SetTranscriber(transcriber)
+				logger.InfoC("voice", "Transcription attached to Matrix channel")
+			}
+		}
 	}
 
 	// Attach TTS synthesis callbacks to the message tool (enables voice=true).

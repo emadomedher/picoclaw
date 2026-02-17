@@ -70,6 +70,16 @@
       "reconnect_interval": 5,
       "group_trigger_prefix": [],
       "allow_from": []
+    },
+    "matrix": {
+      "enabled": false,
+      "homeserver": "https://matrix.example.com",
+      "user_id": "@bot:matrix.example.com",
+      "access_token": "syt_YOUR_ACCESS_TOKEN_HERE",
+      "device_id": "",
+      "allow_from": [],
+      "join_on_invite": true,
+      "require_mention_in_group": true
     }
   },
   "providers": {

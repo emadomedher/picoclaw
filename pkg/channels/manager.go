@@ -176,6 +176,19 @@ func (m *Manager) initChannels() error {
 		}
 	}
 
+	if m.config.Channels.Matrix.Enabled && m.config.Channels.Matrix.AccessToken != "" {
+		logger.DebugC("channels", "Attempting to initialize Matrix channel")
+		matrix, err := NewMatrixChannel(m.config.Channels.Matrix, m.bus)
+		if err != nil {
+			logger.ErrorCF("channels", "Failed to initialize Matrix channel", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			m.channels["matrix"] = matrix
+			logger.InfoC("channels", "Matrix channel enabled successfully")
+		}
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]interface{}{
 		"enabled_channels": len(m.channels),
 	})
