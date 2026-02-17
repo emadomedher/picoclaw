@@ -4,7 +4,7 @@ This guide shows you how to connect PicoClaw to a Matrix homeserver.
 
 ## Prerequisites
 
-1. A Matrix account (e.g., @bot:matrix.org or @bot:matrix.medher.online)
+1. A Matrix account (e.g., @bot:matrix.org or @bot:matrix.example.com)
 2. An access token for your Matrix bot account
 
 ## Getting a Matrix Access Token
@@ -55,7 +55,7 @@ Edit your `~/.picoclaw/config.json`:
 ### Configuration Options
 
 - **`enabled`**: Set to `true` to enable Matrix integration
-- **`homeserver`**: Your Matrix homeserver URL (e.g., `https://matrix.org`, `https://matrix.medher.online`)
+- **`homeserver`**: Your Matrix homeserver URL (e.g., `https://matrix.org`, `https://matrix.example.com`)
 - **`user_id`**: Full Matrix user ID including homeserver (e.g., `@bot:matrix.org`)
 - **`access_token`**: The access token obtained from your Matrix account
 - **`device_id`**: (Optional) Specific device ID, leave empty to auto-generate
