@@ -80,6 +80,7 @@ type ChannelsConfig struct {
 	LINE     LINEConfig     `json:"line"`
 	OneBot   OneBotConfig   `json:"onebot"`
 	Matrix   MatrixConfig   `json:"matrix"`
+	Email    EmailConfig    `json:"email"`
 }
 
 type MatrixConfig struct {
@@ -166,6 +167,17 @@ type OneBotConfig struct {
 	ReconnectInterval  int                 `json:"reconnect_interval" env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
 	GroupTriggerPrefix []string            `json:"group_trigger_prefix" env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
 	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_ONEBOT_ALLOW_FROM"`
+}
+
+type EmailConfig struct {
+	Enabled      bool                `json:"enabled" env:"PICOCLAW_CHANNELS_EMAIL_ENABLED"`
+	IMAPHost     string              `json:"imap_host" env:"PICOCLAW_CHANNELS_EMAIL_IMAP_HOST"`
+	IMAPPort     int                 `json:"imap_port" env:"PICOCLAW_CHANNELS_EMAIL_IMAP_PORT"`
+	Username     string              `json:"username" env:"PICOCLAW_CHANNELS_EMAIL_USERNAME"`
+	Password     string              `json:"password" env:"PICOCLAW_CHANNELS_EMAIL_PASSWORD"`
+	TLS          bool                `json:"tls" env:"PICOCLAW_CHANNELS_EMAIL_TLS"`
+	PollInterval int                 `json:"poll_interval" env:"PICOCLAW_CHANNELS_EMAIL_POLL_INTERVAL"` // seconds
+	AllowFrom    FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_EMAIL_ALLOW_FROM"`
 }
 
 type HeartbeatConfig struct {
@@ -332,6 +344,16 @@ func DefaultConfig() *Config {
 				AllowFrom:             FlexibleStringSlice{},
 				JoinOnInvite:          true,
 				RequireMentionInGroup: true,
+			},
+			Email: EmailConfig{
+				Enabled:      false,
+				IMAPHost:     "localhost",
+				IMAPPort:     143,
+				Username:     "",
+				Password:     "",
+				TLS:          false,
+				PollInterval: 60,
+				AllowFrom:    FlexibleStringSlice{},
 			},
 		},
 		Providers: ProvidersConfig{
