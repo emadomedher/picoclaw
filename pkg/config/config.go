@@ -166,8 +166,6 @@ type MatrixConfig struct {
 	AllowFrom             FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
 	JoinOnInvite          bool                `json:"join_on_invite" env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
 	RequireMentionInGroup bool                `json:"require_mention_in_group" env:"PICOCLAW_CHANNELS_MATRIX_REQUIRE_MENTION_IN_GROUP"`
-	// VoiceReplies: when true, text responses are synthesized to audio and sent as voice messages.
-	VoiceReplies          bool                `json:"voice_replies" env:"PICOCLAW_CHANNELS_MATRIX_VOICE_REPLIES"`
 }
 
 type HeartbeatConfig struct {

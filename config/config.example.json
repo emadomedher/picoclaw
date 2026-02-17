@@ -77,8 +77,7 @@
       "device_id": "",
       "allow_from": [],
       "join_on_invite": true,
-      "require_mention_in_group": true,
-      "voice_replies": false
+      "require_mention_in_group": true
     }
   },
   "providers": {

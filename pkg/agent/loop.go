@@ -717,6 +717,11 @@ func (al *AgentLoop) updateToolContexts(channel, chatID string) {
 			st.SetContext(channel, chatID)
 		}
 	}
+	if tool, ok := al.tools.Get("voice_reply"); ok {
+		if vt, ok := tool.(tools.ContextualTool); ok {
+			vt.SetContext(channel, chatID)
+		}
+	}
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.

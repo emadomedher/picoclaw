@@ -31,7 +31,6 @@ type MatrixChannel struct {
 	roomNames    sync.Map // roomID -> room name
 	placeholders sync.Map // chatID (room ID string) -> placeholder event ID string
 	transcriber  voice.Transcriber
-	synthesizer  voice.Synthesizer
 }
 
 func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*MatrixChannel, error) {
@@ -63,10 +62,6 @@ func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*Matr
 
 func (c *MatrixChannel) SetTranscriber(transcriber voice.Transcriber) {
 	c.transcriber = transcriber
-}
-
-func (c *MatrixChannel) SetSynthesizer(synthesizer voice.Synthesizer) {
-	c.synthesizer = synthesizer
 }
 
 func (c *MatrixChannel) Start(ctx context.Context) error {
@@ -347,19 +342,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
 		}
 	}
 
-	// 2. If voice_replies is enabled and we have a synthesizer, convert text to audio
-	if msg.Content != "" && c.matrixConfig.VoiceReplies && c.synthesizer != nil && c.synthesizer.IsAvailable() {
-		if err := c.sendAsVoice(ctx, roomID, msg); err != nil {
-			// Log and fall through to text reply
-			logger.ErrorCF("matrix", "TTS failed, falling back to text reply", map[string]interface{}{
-				"error": err.Error(),
-			})
-		} else {
-			return nil
-		}
-	}
-
-	// 3. Handle text content
+	// 2. Handle text content
 	if msg.Content != "" {
 		content := &event.MessageEventContent{
 			MsgType: event.MsgText,
@@ -396,7 +379,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
 		return nil
 	}
 
-	// 4. Text is empty but media was sent — redact the thinking placeholder
+	// 3. Text is empty but media was sent — redact the thinking placeholder
 	if len(msg.Media) > 0 {
 		if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
 			_, err := c.client.RedactEvent(ctx, roomID, id.EventID(placeholderID.(string)),
@@ -409,31 +392,6 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
 		}
 	}
 
-	return nil
-}
-
-// sendAsVoice synthesizes msg.Content to audio and sends it as a voice message,
-// then redacts the thinking placeholder.
-func (c *MatrixChannel) sendAsVoice(ctx context.Context, roomID id.RoomID, msg bus.OutboundMessage) error {
-	audioPath, err := c.synthesizer.Synthesize(ctx, msg.Content)
-	if err != nil {
-		return fmt.Errorf("synthesis failed: %w", err)
-	}
-	defer os.Remove(audioPath)
-
-	// Redact thinking placeholder before sending audio
-	if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
-		_, _ = c.client.RedactEvent(ctx, roomID, id.EventID(placeholderID.(string)),
-			mautrix.ReqRedact{Reason: "Voice response incoming"})
-	}
-
-	if err := c.sendMediaFile(ctx, roomID, audioPath); err != nil {
-		return fmt.Errorf("failed to send audio: %w", err)
-	}
-
-	logger.InfoCF("matrix", "Voice reply sent", map[string]interface{}{
-		"chat_id": msg.ChatID,
-	})
 	return nil
 }
 
