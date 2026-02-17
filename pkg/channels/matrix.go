@@ -28,9 +28,9 @@ type MatrixChannel struct {
 	matrixConfig config.MatrixConfig
 	syncer       *mautrix.DefaultSyncer
 	stopSyncer   context.CancelFunc
-	roomNames    sync.Map // roomID -> room name
-	placeholders sync.Map // chatID (room ID string) -> placeholder event ID string
-	transcriber  voice.Transcriber
+	roomNames   sync.Map // roomID -> room name
+	typing      sync.Map // roomID -> bool (active typing indicator)
+	transcriber voice.Transcriber
 }
 
 func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*MatrixChannel, error) {
@@ -55,7 +55,7 @@ func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*Matr
 		matrixConfig: matrixCfg,
 		syncer:       syncer,
 		roomNames:    sync.Map{},
-		placeholders: sync.Map{},
+		typing:       sync.Map{},
 		transcriber:  nil,
 	}, nil
 }
@@ -288,21 +288,13 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 		messageText = c.removeMention(messageText, c.client.UserID)
 	}
 
-	// Send thinking indicator and store placeholder event ID
-	thinkResp, err := c.client.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, &event.MessageEventContent{
-		MsgType: event.MsgNotice,
-		Body:    "⏳",
-	})
-	if err == nil {
-		c.placeholders.Store(roomID, thinkResp.EventID.String())
-		logger.DebugCF("matrix", "Sent thinking indicator", map[string]interface{}{
-			"event_id": thinkResp.EventID.String(),
-			"room_id":  roomID,
-		})
-	} else {
-		logger.WarnCF("matrix", "Failed to send thinking indicator", map[string]interface{}{
+	// Show typing indicator (native Matrix — no message sent)
+	if _, err := c.client.UserTyping(ctx, evt.RoomID, true, 60*time.Second); err != nil {
+		logger.WarnCF("matrix", "Failed to send typing indicator", map[string]interface{}{
 			"error": err.Error(),
 		})
+	} else {
+		c.typing.Store(roomID, true)
 	}
 
 	// Prepare metadata
@@ -331,44 +323,37 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	roomID := id.RoomID(msg.ChatID)
 
-	// 1. Send any media files first (each as its own Matrix event)
+	// Always clear the typing indicator first
+	if _, active := c.typing.LoadAndDelete(msg.ChatID); active {
+		if _, err := c.client.UserTyping(ctx, roomID, false, 0); err != nil {
+			logger.WarnCF("matrix", "Failed to clear typing indicator", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	// 1. Send any media files (each as its own Matrix event)
 	for _, mediaPath := range msg.Media {
 		if err := c.sendMediaFile(ctx, roomID, mediaPath); err != nil {
 			logger.ErrorCF("matrix", "Failed to send media file", map[string]interface{}{
 				"error": err.Error(),
 				"path":  mediaPath,
 			})
-			// Continue with other files even if one fails
 		}
 	}
 
-	// 2. Handle text content
+	// 2. Send text content
 	if msg.Content != "" {
 		content := &event.MessageEventContent{
 			MsgType: event.MsgText,
 			Body:    msg.Content,
 		}
 
-		// Apply Markdown → HTML conversion if content looks like Markdown
 		if hasMarkdown(msg.Content) {
 			content.Format = event.FormatHTML
 			content.FormattedBody = markdownToMatrixHTML(msg.Content)
 		}
 
-		// If we have a thinking placeholder, edit it in-place
-		if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
-			content.SetEdit(id.EventID(placeholderID.(string)))
-			_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
-			if err != nil {
-				return fmt.Errorf("failed to edit matrix placeholder: %w", err)
-			}
-			logger.InfoCF("matrix", "Edited placeholder with response", map[string]interface{}{
-				"chat_id": msg.ChatID,
-			})
-			return nil
-		}
-
-		// No placeholder — send as a fresh message
 		_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, content)
 		if err != nil {
 			return fmt.Errorf("failed to send matrix message: %w", err)
@@ -376,20 +361,6 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
 		logger.InfoCF("matrix", "Sent message to room", map[string]interface{}{
 			"chat_id": msg.ChatID,
 		})
-		return nil
-	}
-
-	// 3. Text is empty but media was sent — redact the thinking placeholder
-	if len(msg.Media) > 0 {
-		if placeholderID, ok := c.placeholders.LoadAndDelete(msg.ChatID); ok {
-			_, err := c.client.RedactEvent(ctx, roomID, id.EventID(placeholderID.(string)),
-				mautrix.ReqRedact{Reason: "Media response sent"})
-			if err != nil {
-				logger.WarnCF("matrix", "Failed to redact thinking placeholder", map[string]interface{}{
-					"error": err.Error(),
-				})
-			}
-		}
 	}
 
 	return nil
