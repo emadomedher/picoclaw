@@ -46,3 +46,4 @@ tasks/
 dist/
 # Docker override files (may contain secrets)
 docker-compose.override.yml
+.env.wanda
