@@ -28,9 +28,10 @@ type MatrixChannel struct {
 	matrixConfig config.MatrixConfig
 	syncer       *mautrix.DefaultSyncer
 	stopSyncer   context.CancelFunc
-	roomNames   sync.Map // roomID -> room name
-	typing      sync.Map // roomID -> bool (active typing indicator)
-	transcriber voice.Transcriber
+	startTime    time.Time // events before this timestamp are ignored (initial sync flood guard)
+	roomNames    sync.Map  // roomID -> room name
+	typing       sync.Map  // roomID -> bool (active typing indicator)
+	transcriber  voice.Transcriber
 }
 
 func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*MatrixChannel, error) {
@@ -54,6 +55,7 @@ func NewMatrixChannel(matrixCfg config.MatrixConfig, bus *bus.MessageBus) (*Matr
 		client:       client,
 		matrixConfig: matrixCfg,
 		syncer:       syncer,
+		startTime:    time.Now(),
 		roomNames:    sync.Map{},
 		typing:       sync.Map{},
 		transcriber:  nil,
@@ -132,6 +134,17 @@ func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event)
 func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	// Ignore our own messages
 	if evt.Sender == c.client.UserID {
+		return
+	}
+
+	// Ignore historical events delivered on initial sync (flood guard).
+	// Matrix timestamps are in milliseconds.
+	if time.UnixMilli(evt.Timestamp).Before(c.startTime) {
+		logger.DebugCF("matrix", "Ignoring historical event", map[string]interface{}{
+			"event_id":  evt.ID.String(),
+			"event_ts":  evt.Timestamp,
+			"start_ts":  c.startTime.UnixMilli(),
+		})
 		return
 	}
 
