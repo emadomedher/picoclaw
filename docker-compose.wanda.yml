@@ -6,24 +6,15 @@ services:
     container_name: picoclaw-wanda
     restart: unless-stopped
 
-    # Host networking: lets the container reach localhost:8200 (Whisper STT)
-    # and localhost:8102 (Kokoro TTS) as if it were running on the host.
-    network_mode: host
+    # Bridge network with host-gateway so host.docker.internal resolves to the host.
+    # Wanda's config already uses host.docker.internal for Whisper STT.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     volumes:
-      # Wanda's config (read-only)
-      - ./config/wanda.config.json:/root/.picoclaw/config.json:ro
-      # Persistent workspace: sessions, memory, logs
-      - wanda-workspace:/root/.picoclaw/workspace
-
-    environment:
-      # Anthropic API key — set this in .env.wanda or export before running
-      - PICOCLAW_PROVIDERS_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # Optional overrides (uncomment to change without editing the config file)
-      # - PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN=${WANDA_MATRIX_TOKEN}
-      # - PICOCLAW_TOOLS_WHISPER_API_BASE=http://localhost:8200
-      # - PICOCLAW_TOOLS_TTS_API_BASE=http://localhost:8102
-      # - PICOCLAW_TOOLS_TTS_VOICE=af_nova
+      # Mount existing Wanda config and workspace directly
+      - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
+      - ~/.picoclaw/workspace:/root/.picoclaw/workspace
 
     command: ["gateway"]
 
@@ -32,6 +23,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  wanda-workspace:
