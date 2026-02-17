@@ -35,9 +35,9 @@ RUN /usr/local/bin/picoclaw onboard
 # Fix: Go's exec.LookPath fails to execute the .js symlink that npm creates
 # for the codex binary on Alpine (musl). Replace it with a proper shell wrapper
 # so exec.Command("codex") works correctly in all providers.
-# Use require.resolve() to find the actual install path — avoids hardcoding npm prefix.
-RUN CODEX_JS=$(node -e "console.log(require.resolve('@openai/codex/bin/codex.js'))") && \
-    printf '#!/bin/sh\nexec node %s "$@"\n' "$CODEX_JS" > /usr/local/bin/codex && \
+RUN rm -f /usr/local/bin/codex && \
+    printf '#!/bin/sh\nexec node /usr/local/lib/node_modules/@openai/codex/bin/codex.js "$@"\n' \
+    > /usr/local/bin/codex && \
     chmod +x /usr/local/bin/codex
 
 ENTRYPOINT ["picoclaw"]
