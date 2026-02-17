@@ -158,14 +158,16 @@ type OneBotConfig struct {
 }
 
 type MatrixConfig struct {
-	Enabled              bool                `json:"enabled" env:"PICOCLAW_CHANNELS_MATRIX_ENABLED"`
-	Homeserver           string              `json:"homeserver" env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
-	UserID               string              `json:"user_id" env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`
-	AccessToken          string              `json:"access_token" env:"PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN"`
-	DeviceID             string              `json:"device_id" env:"PICOCLAW_CHANNELS_MATRIX_DEVICE_ID"`
-	AllowFrom            FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
-	JoinOnInvite         bool                `json:"join_on_invite" env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
-	RequireMentionInGroup bool               `json:"require_mention_in_group" env:"PICOCLAW_CHANNELS_MATRIX_REQUIRE_MENTION_IN_GROUP"`
+	Enabled               bool                `json:"enabled" env:"PICOCLAW_CHANNELS_MATRIX_ENABLED"`
+	Homeserver            string              `json:"homeserver" env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
+	UserID                string              `json:"user_id" env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`
+	AccessToken           string              `json:"access_token" env:"PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN"`
+	DeviceID              string              `json:"device_id" env:"PICOCLAW_CHANNELS_MATRIX_DEVICE_ID"`
+	AllowFrom             FlexibleStringSlice `json:"allow_from" env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
+	JoinOnInvite          bool                `json:"join_on_invite" env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
+	RequireMentionInGroup bool                `json:"require_mention_in_group" env:"PICOCLAW_CHANNELS_MATRIX_REQUIRE_MENTION_IN_GROUP"`
+	// VoiceReplies: when true, text responses are synthesized to audio and sent as voice messages.
+	VoiceReplies          bool                `json:"voice_replies" env:"PICOCLAW_CHANNELS_MATRIX_VOICE_REPLIES"`
 }
 
 type HeartbeatConfig struct {
@@ -228,9 +230,17 @@ type WhisperConfig struct {
 	APIBase string `json:"api_base" env:"PICOCLAW_TOOLS_WHISPER_API_BASE"`
 }
 
+// TTSConfig configures text-to-speech synthesis.
+type TTSConfig struct {
+	Enabled bool   `json:"enabled" env:"PICOCLAW_TOOLS_TTS_ENABLED"`
+	APIBase string `json:"api_base" env:"PICOCLAW_TOOLS_TTS_API_BASE"`
+	Voice   string `json:"voice" env:"PICOCLAW_TOOLS_TTS_VOICE"`
+}
+
 type ToolsConfig struct {
 	Web     WebToolsConfig `json:"web"`
 	Whisper WhisperConfig  `json:"whisper"`
+	TTS     TTSConfig      `json:"tts"`
 }
 
 func DefaultConfig() *Config {
@@ -353,6 +363,11 @@ func DefaultConfig() *Config {
 			Whisper: WhisperConfig{
 				Enabled: true,
 				APIBase: "http://localhost:8200",
+			},
+			TTS: TTSConfig{
+				Enabled: false,
+				APIBase: "http://localhost:8102",
+				Voice:   "af_nova",
 			},
 		},
 		Heartbeat: HeartbeatConfig{

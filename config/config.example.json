@@ -77,7 +77,8 @@
       "device_id": "",
       "allow_from": [],
       "join_on_invite": true,
-      "require_mention_in_group": true
+      "require_mention_in_group": true,
+      "voice_replies": false
     }
   },
   "providers": {
@@ -133,6 +134,11 @@
     "whisper": {
       "enabled": true,
       "api_base": "http://localhost:8200"
+    },
+    "tts": {
+      "enabled": false,
+      "api_base": "http://localhost:8102",
+      "voice": "af_nova"
     }
   },
   "heartbeat": {

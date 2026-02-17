@@ -637,8 +637,27 @@ func gatewayCmd() {
 		if matrixChannel, ok := channelManager.GetChannel("matrix"); ok {
 			if mc, ok := matrixChannel.(*channels.MatrixChannel); ok {
 				mc.SetTranscriber(transcriber)
-				logger.InfoC("voice", "Groq transcription attached to Matrix channel")
+				logger.InfoC("voice", "Transcription attached to Matrix channel")
 			}
+		}
+	}
+
+	// Create TTS synthesizer (Kokoro)
+	if cfg.Tools.TTS.Enabled {
+		synthesizer := voice.NewKokoroSynthesizer(cfg.Tools.TTS.APIBase, cfg.Tools.TTS.Voice)
+		if synthesizer.IsAvailable() {
+			logger.InfoCF("voice", "Kokoro TTS synthesizer enabled", map[string]interface{}{
+				"api_base": cfg.Tools.TTS.APIBase,
+				"voice":    cfg.Tools.TTS.Voice,
+			})
+			if matrixChannel, ok := channelManager.GetChannel("matrix"); ok {
+				if mc, ok := matrixChannel.(*channels.MatrixChannel); ok {
+					mc.SetSynthesizer(synthesizer)
+					logger.InfoC("voice", "TTS synthesizer attached to Matrix channel")
+				}
+			}
+		} else {
+			logger.WarnC("voice", "Kokoro TTS configured but not available — voice replies disabled")
 		}
 	}
 
