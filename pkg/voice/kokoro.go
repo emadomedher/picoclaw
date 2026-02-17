@@ -126,10 +126,10 @@ func (s *KokoroSynthesizer) isChatterbox() bool {
 
 func (s *KokoroSynthesizer) Synthesize(ctx context.Context, text string) (string, error) {
 	logger.InfoCF("voice", "Synthesizing speech", map[string]interface{}{
-		"text_length":  len(text),
-		"voice":        s.voice,
-		"model":        s.model,
-		"chatterbox":   s.isChatterbox(),
+		"text_length": len(text),
+		"voice":       s.voice,
+		"model":       s.model,
+		"chatterbox":  s.isChatterbox(),
 	})
 
 	var (

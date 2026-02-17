@@ -1,0 +1,26 @@
+services:
+  wanda:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: picoclaw-wanda
+    restart: unless-stopped
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      - ~/.picoclaw:/root/.picoclaw
+      - ~/.codex:/root/.codex
+      - ~/.codex:/home/emad/.codex
+
+    environment:
+      - PICOCLAW_CONFIG=/root/.picoclaw/config.json
+
+    command: ["gateway"]
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

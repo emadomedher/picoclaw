@@ -18,12 +18,12 @@ type SendMediaCallback func(ctx context.Context, channel, chatID string, filePat
 type SynthesizeCallback func(ctx context.Context, text string) (filePath string, err error)
 
 type MessageTool struct {
-	sendCallback     SendCallback
-	sendMediaCallback SendMediaCallback
+	sendCallback       SendCallback
+	sendMediaCallback  SendMediaCallback
 	synthesizeCallback SynthesizeCallback
-	defaultChannel   string
-	defaultChatID    string
-	sentInRound      bool
+	defaultChannel     string
+	defaultChatID      string
+	sentInRound        bool
 }
 
 func NewMessageTool() *MessageTool {

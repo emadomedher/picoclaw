@@ -141,9 +141,9 @@ func (c *MatrixChannel) handleMessage(ctx context.Context, evt *event.Event) {
 	// Matrix timestamps are in milliseconds.
 	if time.UnixMilli(evt.Timestamp).Before(c.startTime) {
 		logger.DebugCF("matrix", "Ignoring historical event", map[string]interface{}{
-			"event_id":  evt.ID.String(),
-			"event_ts":  evt.Timestamp,
-			"start_ts":  c.startTime.UnixMilli(),
+			"event_id": evt.ID.String(),
+			"event_ts": evt.Timestamp,
+			"start_ts": c.startTime.UnixMilli(),
 		})
 		return
 	}

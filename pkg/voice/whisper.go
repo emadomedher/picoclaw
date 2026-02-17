@@ -25,7 +25,7 @@ func NewWhisperTranscriber(apiBase string) *WhisperTranscriber {
 	if apiBase == "" {
 		apiBase = "http://localhost:8200"
 	}
-	
+
 	logger.InfoCF("voice", "Creating Whisper transcriber", map[string]interface{}{
 		"api_base": apiBase,
 	})
@@ -172,7 +172,7 @@ func (t *WhisperTranscriber) IsAvailable() bool {
 		return false
 	}
 	defer resp.Body.Close()
-	
+
 	available := resp.StatusCode == http.StatusOK
 	logger.DebugCF("voice", "Whisper transcriber availability", map[string]interface{}{
 		"available":   available,
