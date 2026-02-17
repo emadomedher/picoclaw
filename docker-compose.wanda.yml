@@ -15,8 +15,10 @@ services:
       # Mount existing Wanda config and workspace directly
       - ~/.picoclaw/config.json:/root/.picoclaw/config.json:ro
       - ~/.picoclaw/workspace:/root/.picoclaw/workspace
-      # Codex CLI auth (needed for codex-cli provider)
+      # Codex CLI auth — mounted at both paths because the state DB has
+      # absolute host paths (/home/emad/.codex/...) baked into it
       - ~/.codex:/root/.codex:ro
+      - ~/.codex:/home/emad/.codex:ro
 
     command: ["gateway"]
 
