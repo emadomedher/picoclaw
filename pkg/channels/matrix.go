@@ -538,10 +538,10 @@ func (c *MatrixChannel) isBotMentioned(msgEvt *event.MessageEventContent, botUse
 		return true
 	}
 
-	// Localpart mention (e.g. "wanda")
+	// @localpart mention (e.g. "@wanda") — must have @ prefix to avoid false positives
 	localpart := strings.TrimPrefix(botUserID.String(), "@")
 	localpart = strings.Split(localpart, ":")[0]
-	if strings.Contains(strings.ToLower(msgEvt.Body), strings.ToLower(localpart)) {
+	if strings.Contains(strings.ToLower(msgEvt.Body), "@"+strings.ToLower(localpart)) {
 		return true
 	}
 
